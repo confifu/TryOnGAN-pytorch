@@ -13,6 +13,8 @@ import PIL.Image
 import json
 import torch
 import dnnlib
+import pandas as pd
+from scipy.stats import multivariate_normal
 
 try:
     import pyspng
@@ -73,6 +75,9 @@ class Dataset(torch.utils.data.Dataset):
     def _load_raw_labels(self): # to be overridden by subclass
         raise NotImplementedError
 
+    def get_pose(self, idx): # to be overridden by subclass
+        raise NotImplementedError
+
     def __getstate__(self):
         return dict(self.__dict__, _raw_labels=None)
 
@@ -96,8 +101,11 @@ class Dataset(torch.utils.data.Dataset):
         #assert list(parsemap.shape) == self.image_shape
         assert parsemap.dtype == np.uint8
 
-        pose = self.get_pose(self._raw_idx[idx])
-    
+        try:
+            pose = self.get_pose()
+        except:
+            return self.__getitem__(idx + 1)
+
         if self._xflip[idx]:
             assert image.ndim == 3 # CHW
             image = image[:, :, ::-1]
@@ -215,6 +223,8 @@ class ImageFolderDataset(Dataset):
         raw_shape = [len(self._image_fnames)] + list(self._load_raw_image(0).shape)
         if resolution is not None and (raw_shape[2] != resolution or raw_shape[3] != resolution):
             raise IOError('Image files do not match the specified resolution')
+
+        self.df = pd.read_csv(pose_file)
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod
@@ -294,5 +304,45 @@ class ImageFolderDataset(Dataset):
         labels = np.array(labels)
         labels = labels.astype({1: np.int64, 2: np.float32}[labels.ndim])
         return labels
+
+    def get_pose(self):
+        base = os.path.basename(self.fname)
+        keypoint = self.df[self.df['name'] == base]['keypoints'].tolist()[0]
+        ptlist = keypoint.split(':')
+        ptlist = [float(x) for x in ptlist]
+        map = self.getHeatMap(ptlist)
+        return map
+
+    def getHeatMap(self, pose):
+        '''
+        pose should be a list of length 51, every 3 number for
+        x, y and confidence for each of the 17 keypoints.
+        '''
+
+        stack = []
+        for i in range(17):
+            x = pose[3*i]
+            
+            y = pose[3*i + 1]
+            c = pose[3*i + 2]
+            
+            ratio = 64.0 / self.image_size
+            map = self.getGaussianHeatMap([x*ratio, y*ratio])
+
+            if c < 0.4:
+                map = 0.0 * map
+            stack.append(map)
+        
+        maps = np.dstack(stack)
+        heatmap = torch.from_numpy(maps).transpose(0, -1)
+        return heatmap
+
+    def getGaussianHeatMap(self, bonePos):
+        width = 64
+        x, y = np.mgrid[0:width:1, 0:width:1]
+        pos = np.dstack((x, y))
+
+        gau = multivariate_normal(mean = list(bonePos), cov = [[width*0.02, 0.0], [0.0, width*0.02]]).pdf(pos)
+        return gau
 
 #----------------------------------------------------------------------------
