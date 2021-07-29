@@ -214,7 +214,8 @@ def run_projection(
     device = torch.device('cuda')
     with dnnlib.util.open_url(network_pkl) as fp:
         G = legacy.load_network_pkl(fp)['G_ema'].requires_grad_(False).to(device) # type: ignore
-
+    
+    '''
     # Load target image.
     target_pil = PIL.Image.open(target_fname).convert('RGB')
     w, h = target_pil.size
@@ -222,12 +223,43 @@ def run_projection(
     target_pil = target_pil.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
     target_pil = target_pil.resize((G.img_resolution, G.img_resolution), PIL.Image.LANCZOS)
     target_uint8 = np.array(target_pil, dtype=np.uint8)
+    '''
+
+    args = dnnlib.EasyDict()
+    args.training_set_kwargs = dnnlib.EasyDict(class_name='training.dataset.ImageFolderDataset', path=dataset, pose_file = posefile, use_labels=True, max_size=None, xflip=False)
+    args.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=3, prefetch_factor=2)
+    try:
+        training_set = dnnlib.util.construct_class_by_name(**args.training_set_kwargs) # subclass of training.dataset.Dataset
+        args.training_set_kwargs.resolution = training_set.resolution # be explicit about resolution
+        args.training_set_kwargs.use_labels = training_set.has_labels # be explicit about labels
+        args.training_set_kwargs.max_size = len(training_set) # be explicit about dataset size
+        desc = training_set.name
+        del training_set # conserve memory
+    except IOError as err:
+        raise UserError(f'--data: {err}')
+    
+    training_set = dnnlib.util.construct_class_by_name(**args.training_set_kwargs) # subclass of training.dataset.Dataset
+    training_set_sampler = misc.InfiniteSampler(dataset=training_set, rank=0, num_replicas=1, seed=100)
+    
+    args.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=3, prefetch_factor=2)
+    training_set_iterator = iter(torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler, batch_size=1, **args.data_loader_kwargs))
+    
+    while True:
+        try:
+            phase_real_img, phase_real_c, phase_pose = next(training_set_iterator)
+            break
+        except:
+            print("loopin")
+    target_uint8 = phase_real_img.squeeze().transpose(0, -1).numpy()
+    print("real image shape is", phase_real_img.shape)
+    phase_pose = phase_pose.to(device).to(torch.float32)
 
     # Optimize projection.
     start_time = perf_counter()
     projected_w_steps = project(
         G,
         target=torch.tensor(target_uint8.transpose([2, 0, 1]), device=device), # pylint: disable=not-callable
+        pose=phase_pose,
         num_steps=num_steps,
         device=device,
         verbose=True
