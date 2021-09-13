@@ -34,8 +34,8 @@ class HookedGenerator(nn.Module):
             self.activation[name] = output
         return hook
 
-    def forward(self, w, fLayerIdx):
-        img = self.G.synthesis(w)
+    def forward(self, w, style = None, fLayerIdx=4):
+        img = self.G.synthesis(w, style)
         outputs=[]
         for i,_ in enumerate(self.G.synthesis.children()):
             if i == fLayerIdx:
@@ -154,10 +154,71 @@ def clusterRealImage(
     '''
 
     w = getProjection(network_pkl=network_pkl, target_fname=imgPath, num_steps=1000)
-    HG = HookedGenerator(network_pkl, featureLayer).eval().requires_grad_(False)
+    HG = HookedGenerator(network_pkl).eval().requires_grad_(False)
 
     with torch.no_grad():
-        img, feature = HG(w)
+        img, feature = HG(w, featureLayer)
+        print(feature[0].shape)
+
+        features128 = []
+        for f in feature:
+            f128 = nn.functional.interpolate(f,
+                                            size=(128, 128),
+                                            mode='bilinear',
+                                            align_corners=True).clamp(min=-1.0, max=1.0).detach()
+
+            features128.append(f128)
+
+        feature=torch.cat(features128, axis = 1)
+
+    img128 = nn.functional.interpolate(img,
+                                    size=(128, 128),
+                                    mode='bilinear',
+                                    align_corners=True).clamp(min=-1.0, max=1.0).detach()
+
+    img_arr = img128.permute(0, 2, 3, 1).detach().cpu().numpy()
+
+    features_tr = feature.permute(0, 2, 3, 1)
+    features_flat = features_tr.reshape(-1, features_tr.shape[-1])
+
+    arr = features_flat.detach().cpu().numpy()
+
+    with open(kmeans_path, "rb") as f:
+        kmeans = pickle.load(f)
+
+    predictions_flat = kmeans.predict(arr)
+    predictions = predictions_flat.reshape(feature.shape[0], feature.shape[2], feature.shape[3])
+    
+    return img_arr, predictions
+
+def clusterFromStyleLatent(
+    network_pkl,
+    style,
+    kmeans_path,
+    featureLayer
+):
+
+    '''
+    invert image to latent,
+    get features for latent
+    generate clusterss using features and kmeans
+
+    img_arr, predictions = clusterRealImage(network_pkl="network-snapshot.pkl",
+                                        kmeans_path="k_means_cluster_7_layer_4.pkl",
+                                        featureLayer=4,
+                                        imgPath="img.jpeg")
+    '''
+
+    HG = HookedGenerator(network_pkl).eval().requires_grad_(False)
+
+    z = torch.from_numpy(np.random.RandomState(100).randn(1, HG.G.z_dim)).to(HG.device)
+    label = torch.zeros([1, HG.G.c_dim], device = HG.device)
+    w = HG.G.mapping(z, label, truncation_psi=0.9)
+
+    style = [s.to(HG.device) for s in style]
+
+    with torch.no_grad():
+        img, feature = HG(w, style, featureLayer)
         print(feature[0].shape)
 
         features128 = []
