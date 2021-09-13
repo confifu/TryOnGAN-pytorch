@@ -7,6 +7,8 @@ import re
 import dnnlib
 import numpy as np
 import torch
+from torch_utils import misc
+
 
 from sklearn.cluster import KMeans
 import pickle
@@ -15,12 +17,30 @@ from projector import getProjection
 import legacy
 
 class HookedGenerator(nn.Module):
-    def __init__(self, network_pkl):
+    def __init__(self, network_pkl, resolution=256):
         super(HookedGenerator, self).__init__()
-        print('Loading networks from "%s"...' % network_pkl)
+
         self.device = torch.device('cuda')
+
+        G_kwargs = dnnlib.EasyDict(class_name='training.networks.Generator', z_dim=512, w_dim=512, mapping_kwargs=dnnlib.EasyDict(), synthesis_kwargs=dnnlib.EasyDict())
+        if resolution == 256: factor = 0.5
+        else : factor = 1
+        G_kwargs.synthesis_kwargs.channel_base = int(factor * 32768)
+        G_kwargs.synthesis_kwargs.channel_max = 512
+        G_kwargs.mapping_kwargs.num_layers = 2
+        G_kwargs.synthesis_kwargs.num_fp16_res = 4
+        G_kwargs.synthesis_kwargs.conv_clamp = 256
+
+        common_kwargs = dict(c_dim=0, img_resolution=resolution, img_channels=3)
+        self.G = dnnlib.util.construct_class_by_name(**G_kwargs, **common_kwargs).train().requires_grad_(False).to(self.device)
+
+        print('Loading networks from "%s"...' % network_pkl)
+
         with dnnlib.util.open_url(network_pkl) as f:
-            self.G = legacy.load_network_pkl(f)['G_ema'].to(self.device) # type: ignore
+            resume_data = legacy.load_network_pkl(f)
+        
+        for name, module in [('G', self.G)]:
+            misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
 
         self.activation = {}
 
