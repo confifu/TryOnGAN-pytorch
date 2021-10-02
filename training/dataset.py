@@ -75,7 +75,7 @@ class Dataset(torch.utils.data.Dataset):
     def _load_raw_labels(self): # to be overridden by subclass
         raise NotImplementedError
 
-    def get_pose(self, idx): # to be overridden by subclass
+    def get_pose(self): # to be overridden by subclass
         raise NotImplementedError
 
     def __getstate__(self):
@@ -103,7 +103,7 @@ class Dataset(torch.utils.data.Dataset):
 
         try:
             pose = self.get_pose()
-        except:
+        except IndexError as e:
             return self.__getitem__(idx + 1)
 
         if self._xflip[idx]:
@@ -225,6 +225,7 @@ class ImageFolderDataset(Dataset):
             raise IOError('Image files do not match the specified resolution')
 
         self.df = pd.read_csv(pose_file)
+        self.image_size = resolution
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
     @staticmethod
