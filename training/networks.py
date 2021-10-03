@@ -250,6 +250,42 @@ class MappingNetwork(torch.nn.Module):
 
 #----------------------------------------------------------------------------
 
+class MappingWNetwork():
+    def __init__(self,
+        z_dim,                      # Input latent (Z) dimensionality, 0 = no latent.
+        c_dim,                      # Conditioning label (C) dimensionality, 0 = no label.
+        w_dim,                      # Intermediate latent (W) dimensionality.
+        num_ws,                     # Number of intermediate latents to output, None = do not broadcast.
+        num_layers      = 8,        # Number of mapping layers.
+        embed_features  = None,     # Label embedding dimensionality, None = same as w_dim.
+        layer_features  = None,     # Number of intermediate features in the mapping layers, None = same as w_dim.
+        activation      = 'lrelu',  # Activation function: 'relu', 'lrelu', etc.
+        lr_multiplier   = 0.01,     # Learning rate multiplier for the mapping layers.
+        w_avg_beta      = 0.995,    # Decay for tracking the moving average of W during training, None = do not track.
+    ):
+        super().__init__()
+        self.num_ws = num_ws
+        self.moduleList = torch.nn.ModuleList()
+        for _ in range(num_ws):
+            self.moduleList.append(MappingNetwork(z_dim=z_dim,
+                                        c_dim=c_dim,
+                                        w_dim=w_dim,
+                                        num_ws=None,
+                                        num_layers=num_layers,
+                                        embed_features=embed_features,
+                                        layer_features=layer_features,
+                                        activation=activation,
+                                        lr_multiplier=lr_multiplier,
+                                        w_avg_beta=w_avg_beta))
+    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, skip_w_avg_update=False):
+        # Embed, n
+        assert z.shape[1] == self.num_ws
+        ws = []
+        for i, layer in enumerate(self.moduleList):
+            ws.append(layer(z[:, i , : ]))
+        print(ws[0].shape)
+
+#----------------------------------------------------------------------------
 @persistence.persistent_class
 class SynthesisLayer(torch.nn.Module):
     def __init__(self,
@@ -540,7 +576,7 @@ class Generator(torch.nn.Module):
         self.img_channels = img_channels
         self.synthesis = SynthesisNetwork(w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
         self.num_ws = self.synthesis.num_ws
-        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
+        self.mapping = MappingWNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
 
     def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
