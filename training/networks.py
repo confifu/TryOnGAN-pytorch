@@ -250,7 +250,7 @@ class MappingNetwork(torch.nn.Module):
 
 #----------------------------------------------------------------------------
 
-class MappingWNetwork():
+class MappingWNetwork(torch.nn.Module):
     def __init__(self,
         z_dim,                      # Input latent (Z) dimensionality, 0 = no latent.
         c_dim,                      # Conditioning label (C) dimensionality, 0 = no label.
@@ -265,25 +265,26 @@ class MappingWNetwork():
     ):
         super().__init__()
         self.num_ws = num_ws
-        self.moduleList = torch.nn.ModuleList()
-        for _ in range(num_ws):
-            self.moduleList.append(MappingNetwork(z_dim=z_dim,
-                                        c_dim=c_dim,
-                                        w_dim=w_dim,
-                                        num_ws=None,
-                                        num_layers=num_layers,
-                                        embed_features=embed_features,
-                                        layer_features=layer_features,
-                                        activation=activation,
-                                        lr_multiplier=lr_multiplier,
-                                        w_avg_beta=w_avg_beta))
+        self.z_dim = z_dim
+        self.w_dim = w_dim
+        self.layer = MappingNetwork(z_dim=z_dim,
+                                    c_dim=0,
+                                    w_dim=w_dim,
+                                    num_ws=None,
+                                    num_layers=num_layers,
+                                    embed_features=embed_features,
+                                    layer_features=layer_features,
+                                    activation=activation,
+                                    lr_multiplier=lr_multiplier,
+                                    w_avg_beta=None)
     def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, skip_w_avg_update=False):
         # Embed, n
         assert z.shape[1] == self.num_ws
-        ws = []
-        for i, layer in enumerate(self.moduleList):
-            ws.append(layer(z[:, i , : ]))
-        print(ws[0].shape)
+        z = z.reshape(-1, self.z_dim)
+        ws = self.layer(z, None)
+        ws = ws.reshape(-1, self.num_ws, self.w_dim)
+        print(ws.shape)
+        return ws
 
 #----------------------------------------------------------------------------
 @persistence.persistent_class
@@ -507,53 +508,76 @@ class SynthesisNetwork(torch.nn.Module):
         self.num_ws = 0
         for res in self.block_resolutions:
             in_channels = channels_dict[res // 2] if res > 4 else 0
+            if res == img_resolution:
+                in_channels = 5 * channels_dict[res // 2]
             out_channels = channels_dict[res]
             use_fp16 = (res >= fp16_resolution)
             is_last = (res == self.img_resolution)
-            block = SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
-                img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs)
-            self.num_ws += block.num_conv
-            if is_last:
+            if 16 < res < 256:
+                blocks = torch.nn.ModuleList([SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
+                    img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
+                for i, block in enumerate(blocks):
+                    self.num_ws += block.num_conv
+                    self.num_ws += block.num_torgb
+                    setattr(self, f'b{res}{i}', block)
+            else:
+                block = SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
+                    img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs)
+                self.num_ws += block.num_conv
                 self.num_ws += block.num_torgb
-            setattr(self, f'b{res}', block)
+                setattr(self, f'b{res}', block)
 
-    def forward(self, ws, styles = None, **block_kwargs):
+    def forward(self, ws, ret_pose = False, **block_kwargs):
         block_ws = []
         with torch.autograd.profiler.record_function('split_ws'):
             misc.assert_shape(ws, [None, self.num_ws, self.w_dim])
             ws = ws.to(torch.float32)
             w_idx = 0
             for res in self.block_resolutions:
-                block = getattr(self, f'b{res}')
-                block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
-                w_idx += block.num_conv
+                if 16 < res < 256:
+                    for i in range(6):
+                        block = getattr(self, f'b{res}{i}')
+                        block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
+                        w_idx += block.num_conv + block.num_torgb
+                else:
+                    block = getattr(self, f'b{res}')
+                    block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
+                    w_idx += block.num_conv + block.num_torgb
 
-        if styles is None:
 
-            x = img = None
-            for res, cur_ws in zip(self.block_resolutions, block_ws):
+        x = img = None
+        pose = None
+        regions = {}
+        bin_regions = {}
+        col_regions = {}
+        for res, cur_ws in zip(self.block_resolutions, block_ws):
+            if res <= self.img_resolution // 16:
                 block = getattr(self, f'b{res}')
                 x, img = block(x, img, cur_ws, **block_kwargs)
-            return img
+                pose = img
+                for i in range(6):
+                    regions[i] = (x, img)
+            elif self.img_resolution // 16 < res < self.img_resolution:
+                for i in range(6):
+                    block = getattr(self, f'b{res}{i}')
+                    x, img = block(regions[i][0], regions[i][1], cur_ws, **block_kwargs)
+                    regions[i] = (x, img)
+                    if res == self.img_resolution //8:
+                        bin_regions[i] = img
+                    if res == self.img_resolution//2:
+                        col_regions[i] = img
+            else:
+                x = torch.cat([regions[i][0] for i in range(6)], dim = 1)
+                img = torch.stack([regions[i][1] for i in range(6)], dim =0).sum(dim=0)
 
-        else:
-            #style is a list
-            block_styles = []
-            misc.assert_shape(ws, [None, self.num_ws, self.w_dim])
-            
-            for i in range(len(styles)):
-                styles[i] = styles[i].to(torch.float32)
-            style_idx = 0
-            for res in self.block_resolutions:
+                print(res)
+                print(x.shape)
+                print(img.shape)
                 block = getattr(self, f'b{res}')
-                block_styles.append(styles[style_idx: style_idx + block.num_conv + block.num_torgb])
-                style_idx += block.num_conv + block.num_torgb
-
-            x = img = None
-            for res, cur_ws, cur_styles in zip(self.block_resolutions, block_ws, block_styles):
-                block = getattr(self, f'b{res}')
-                x, img = block(x, img, cur_ws, cur_styles, **block_kwargs)
-            return img
+                x, img = block(x, img, cur_ws, **block_kwargs)
+        if ret_pose:
+            return pose, bin_regions, col_regions, img
+        return img
 
 #----------------------------------------------------------------------------
 
@@ -578,10 +602,9 @@ class Generator(torch.nn.Module):
         self.num_ws = self.synthesis.num_ws
         self.mapping = MappingWNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
 
-    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
+    def forward(self, z, c, ret_pose= False, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
-        img = self.synthesis(ws, **synthesis_kwargs)
-        return img
+        return self.synthesis(ws, ret_pose=ret_pose, **synthesis_kwargs)
 
 #----------------------------------------------------------------------------
 
@@ -787,19 +810,55 @@ class Discriminator(torch.nn.Module):
         cur_layer_idx = 0
         for res in self.block_resolutions:
             in_channels = channels_dict[res] if res < img_resolution else 0
+            if res == img_resolution:
+                in_channels = 5 * channels_dict[res // 2]
             tmp_channels = channels_dict[res]
             out_channels = channels_dict[res // 2]
             use_fp16 = (res >= fp16_resolution)
-            block = DiscriminatorBlock(in_channels, tmp_channels, out_channels, resolution=res,
-                first_layer_idx=cur_layer_idx, use_fp16=use_fp16, **block_kwargs, **common_kwargs)
-            setattr(self, f'b{res}', block)
-            cur_layer_idx += block.num_layers
+
+            if 16 < res < 256:
+                blocks = torch.nn.ModuleList([DiscriminatorBlock(in_channels, tmp_channels, out_channels, resolution=res,
+                            first_layer_idx=cur_layer_idx, use_fp16=use_fp16, **block_kwargs, **common_kwargs) for _ in range(6)])
+                for i, block in enumerate(blocks):
+                    setattr(self, f'b{res}{i}', block)
+                cur_layer_idx += block.num_layers
+            else:
+                block = DiscriminatorBlock(in_channels, tmp_channels, out_channels, resolution=res,
+                    first_layer_idx=cur_layer_idx, use_fp16=use_fp16, **block_kwargs, **common_kwargs)
+                setattr(self, f'b{res}', block)
+                cur_layer_idx += blocks[0].num_layers
         if c_dim > 0:
             self.mapping = MappingNetwork(z_dim=0, c_dim=c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, **mapping_kwargs)
         self.b4 = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, **epilogue_kwargs, **common_kwargs)
 
-    def forward(self, img, c, **block_kwargs):
+    def forward(self, img, pose, bin_regions, col_regions, c, **block_kwargs):
         x = None
+        region = {}
+        for res in self.block_resolutions:
+            if res == self.img_resolution:
+                block = getattr(self, f'b{res}')
+                x, img = block(x, img, **block_kwargs)
+            elif res == self.img_resolution//2:
+                for i in range(6):
+                    block = getattr(self, f'b{res}{i}')
+                    x, img = block(x, bin_regions[i], **block_kwargs)
+                    region[i] = (x, img)
+            elif self.img_resolution//2 > res > 64:
+                for i in range(6):
+                    block = getattr(self, f'b{res}{i}')
+                    x, img = block(region[i][0], region[i][1], **block_kwargs)
+                    region[i] = (x, img)
+            elif res == self.img_resolution//2:
+                for i in range(6):
+                    block = getattr(self, f'b{res}{i}')
+                    x, img = block(x, col_regions[i], **block_kwargs)
+            elif res == self.img_resolution // 16:
+                block = getattr(self, f'b{res}')
+                x, img = block(x, pose, **block_kwargs)
+            else :
+                block = getattr(self, f'b{res}')
+                x, img = block(x, img, **block_kwargs)
+
         for res in self.block_resolutions:
             block = getattr(self, f'b{res}')
             x, img = block(x, img, **block_kwargs)

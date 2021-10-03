@@ -35,7 +35,7 @@ class StyleGAN2Loss(Loss):
         self.pl_weight = pl_weight
         self.pl_mean = torch.zeros([], device=device)
 
-    def run_G(self, z, c, sync):
+    def run_G(self, z, c, ret_pose = True, sync=True):
         with misc.ddp_sync(self.G_mapping, sync):
             ws = self.G_mapping(z, c)
             if self.style_mixing_prob > 0:
@@ -44,17 +44,61 @@ class StyleGAN2Loss(Loss):
                     cutoff = torch.where(torch.rand([], device=ws.device) < self.style_mixing_prob, cutoff, torch.full_like(cutoff, ws.shape[1]))
                     ws[:, cutoff:] = self.G_mapping(torch.randn_like(z), c, skip_w_avg_update=True)[:, cutoff:]
         with misc.ddp_sync(self.G_synthesis, sync):
-            img = self.G_synthesis(ws)
-        return img, ws
+            pose, bin_regions, col_regions, img = self.G_synthesis(ws, ret_pose= ret_pose)
+        return pose, bin_regions, col_regions, img, ws
 
-    def run_D(self, img, c, sync):
+    def run_D(self, img, pose, bin_regions, col_regions, c, sync):
         if self.augment_pipe is not None:
             img = self.augment_pipe(img)
         with misc.ddp_sync(self.D, sync):
-            logits = self.D(img, c)
+            logits = self.D(img, pose, bin_regions, col_regions, c)
         return logits
+    
+    def getBinRegionDict(self, pmap, detach = False, require_grad = False):
+        '''
+        returns 32x32 bin map for 6 region
+        '''
+        #reshape pmap to 32x32
+        pmap = torch.nn.functional.interpolate(pmap,
+                                    size=(32, 32),
+                                    mode='bilinear',
+                                    align_corners=True)
+        if detach:
+            pmap = pmap.detach().requires_grad(require_grad)
+        region = {}
+        region[0] = 0 < pmap <=1
+        region[1] = 1 < pmap <=2
+        region[2] = 2 < pmap <=3
+        region[3] = 3 < pmap <=4
+        region[4] = 4 < pmap <=5
+        region[5] = 5 < pmap <=6
+        return region
 
-    def accumulate_gradients(self, phase, real_img, real_pmap, pose, real_c, gen_z, gen_c, sync, gain):
+    def getColRegionDict(self, img, pmap, detach = False, require_grad= False):
+        res = img.shape[-1]
+        print("res in color region dict ", res)
+        pmap = torch.nn.functional.interpolate(pmap,
+                                    size=(res//2, res//2),
+                                    mode='bilinear',
+                                    align_corners=True)
+        img = torch.nn.functional.interpolate(img,
+                                    size=(res//2, res//2),
+                                    mode='bilinear',
+                                    align_corners=True)
+
+        if detach:
+            pmap = pmap.detach().requires_grad(require_grad)
+            img = img.detach().requires_grad(require_grad)
+        region = {}
+        region[0] = torch.logical_and(img, 0 < pmap <=1)
+        region[1] = torch.logical_and(img, 1 < pmap <=2)
+        region[2] = torch.logical_and(img, 2 < pmap <=3)
+        region[3] = torch.logical_and(img, 3 < pmap <=4)
+        region[4] = torch.logical_and(img, 4 < pmap <=5)
+        region[5] = torch.logical_and(img, 5 < pmap <=6)
+        return region
+
+    def accumulate_gradients(self, phase, real_img, real_pmap, real_pose, real_c, gen_z, gen_c, sync, gain):
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
         do_Gmain = (phase in ['Gmain', 'Gboth'])
         do_Dmain = (phase in ['Dmain', 'Dboth'])
@@ -64,8 +108,8 @@ class StyleGAN2Loss(Loss):
         # Gmain: Maximize logits for generated images.
         if do_Gmain:
             with torch.autograd.profiler.record_function('Gmain_forward'):
-                gen_img, _gen_ws = self.run_G(gen_z, gen_c, sync=(sync and not do_Gpl)) # May get synced by Gpl.
-                gen_logits = self.run_D(gen_img, gen_c, sync=False)
+                gen_pose, gen_bin_regions, gen_col_regions, gen_img, _gen_ws = self.run_G(gen_z, gen_c, ret_pose = True, sync=(sync and not do_Gpl)) # May get synced by Gpl.
+                gen_logits = self.run_D(gen_img, gen_pose, gen_bin_regions, gen_col_regions, gen_c, sync=False)
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Gmain = torch.nn.functional.softplus(-gen_logits) # -log(sigmoid(gen_logits))
@@ -77,7 +121,7 @@ class StyleGAN2Loss(Loss):
         if do_Gpl:
             with torch.autograd.profiler.record_function('Gpl_forward'):
                 batch_size = gen_z.shape[0] // self.pl_batch_shrink
-                gen_img, gen_ws = self.run_G(gen_z[:batch_size], gen_c[:batch_size], sync=sync)
+                gen_pose, gen_bin_regions, gen_col_regions, gen_img, gen_ws = self.run_G(gen_z[:batch_size], gen_c[:batch_size], ret_pose = True, sync=sync)
                 pl_noise = torch.randn_like(gen_img) / np.sqrt(gen_img.shape[2] * gen_img.shape[3])
                 with torch.autograd.profiler.record_function('pl_grads'), conv2d_gradfix.no_weight_gradients():
                     pl_grads = torch.autograd.grad(outputs=[(gen_img * pl_noise).sum()], inputs=[gen_ws], create_graph=True, only_inputs=True)[0]
@@ -95,8 +139,8 @@ class StyleGAN2Loss(Loss):
         loss_Dgen = 0
         if do_Dmain:
             with torch.autograd.profiler.record_function('Dgen_forward'):
-                gen_img, _gen_ws = self.run_G(gen_z, gen_c, sync=False)
-                gen_logits = self.run_D(gen_img, gen_c, sync=False) # Gets synced by loss_Dreal.
+                gen_pose, gen_bin_regions, gen_col_regions, gen_img, _gen_ws = self.run_G(gen_z, gen_c, ret_pose = True, sync=False)
+                gen_logits = self.run_D(gen_img, gen_pose, gen_bin_regions, gen_col_regions, gen_c, sync=False) # Gets synced by loss_Dreal.
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Dgen = torch.nn.functional.softplus(gen_logits) # -log(1 - sigmoid(gen_logits))
@@ -109,7 +153,10 @@ class StyleGAN2Loss(Loss):
             name = 'Dreal_Dr1' if do_Dmain and do_Dr1 else 'Dreal' if do_Dmain else 'Dr1'
             with torch.autograd.profiler.record_function(name + '_forward'):
                 real_img_tmp = real_img.detach().requires_grad_(do_Dr1)
-                real_logits = self.run_D(real_img_tmp, real_c, sync=sync)
+                real_pose_tmp = real_pose.detach().requires_grad_(do_Dr1)
+                real_bin_region_tmp = self.getBinRegionDict(real_pmap, detach = True, require_grad=do_Dr1)
+                real_col_region_tmp = self.getColRegionDict(real_img_tmp, real_pmap, detach = True, require_grad=do_Dr1)
+                real_logits = self.run_D(real_img_tmp, real_pose_tmp, real_bin_region_tmp, real_col_region_tmp, real_c, sync=sync)
                 training_stats.report('Loss/scores/real', real_logits)
                 training_stats.report('Loss/signs/real', real_logits.sign())
 
@@ -121,7 +168,8 @@ class StyleGAN2Loss(Loss):
                 loss_Dr1 = 0
                 if do_Dr1:
                     with torch.autograd.profiler.record_function('r1_grads'), conv2d_gradfix.no_weight_gradients():
-                        r1_grads = torch.autograd.grad(outputs=[real_logits.sum()], inputs=[real_img_tmp], create_graph=True, only_inputs=True)[0]
+                        inputs = [real_img_tmp, real_pose_tmp] + [real_bin_region_tmp[i] for i in range(6)] + [real_col_region_tmp[i] for i in range(6)]
+                        r1_grads = torch.autograd.grad(outputs=[real_logits.sum()], inputs=inputs, create_graph=True, only_inputs=True)[0]
                     r1_penalty = r1_grads.square().sum([1,2,3])
                     loss_Dr1 = r1_penalty * (self.r1_gamma / 2)
                     training_stats.report('Loss/r1_penalty', r1_penalty)

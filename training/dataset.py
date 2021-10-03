@@ -327,7 +327,7 @@ class ImageFolderDataset(Dataset):
             y = pose[3*i + 1]
             c = pose[3*i + 2]
             
-            ratio = 64.0 / self.image_size
+            ratio = 16.0 / self.image_size
             map = self.getGaussianHeatMap([x*ratio, y*ratio])
 
             if c < 0.4:
@@ -339,7 +339,7 @@ class ImageFolderDataset(Dataset):
         return heatmap
 
     def getGaussianHeatMap(self, bonePos):
-        width = 64
+        width = 16
         x, y = np.mgrid[0:width:1, 0:width:1]
         pos = np.dstack((x, y))
 
