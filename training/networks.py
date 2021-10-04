@@ -226,7 +226,7 @@ class MappingNetwork(torch.nn.Module):
         # Main layers.
         for idx in range(self.num_layers):
             layer = getattr(self, f'fc{idx}')
-            x = layer(x)
+            x = torch.nn.functional.leaky_relu(layer(x))
         return x
 
 #----------------------------------------------------------------------------

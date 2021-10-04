@@ -104,6 +104,7 @@ class Dataset(torch.utils.data.Dataset):
         try:
             pose = self.get_pose()
         except IndexError as e:
+            print("got error")
             return self.__getitem__(idx + 1)
 
         if self._xflip[idx]:
