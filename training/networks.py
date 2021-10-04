@@ -205,7 +205,7 @@ class MappingNetwork(torch.nn.Module):
         for idx in range(num_layers):
             in_features = features_list[idx]
             out_features = features_list[idx + 1]
-            layer = FullyConnectedLayer(in_features, out_features, activation=activation, lr_multiplier=lr_multiplier)
+            layer = torch.nn.Linear(in_features, out_features)
             setattr(self, f'fc{idx}', layer)
 
         if num_ws is not None and w_avg_beta is not None:
@@ -227,25 +227,6 @@ class MappingNetwork(torch.nn.Module):
         for idx in range(self.num_layers):
             layer = getattr(self, f'fc{idx}')
             x = layer(x)
-
-        # Update moving average of W.
-        if self.w_avg_beta is not None and self.training and not skip_w_avg_update:
-            with torch.autograd.profiler.record_function('update_w_avg'):
-                self.w_avg.copy_(x.detach().mean(dim=0).lerp(self.w_avg, self.w_avg_beta))
-
-        # Broadcast.
-        if self.num_ws is not None:
-            with torch.autograd.profiler.record_function('broadcast'):
-                x = x.unsqueeze(1).repeat([1, self.num_ws, 1])
-
-        # Apply truncation.
-        if truncation_psi != 1:
-            with torch.autograd.profiler.record_function('truncate'):
-                assert self.w_avg_beta is not None
-                if self.num_ws is None or truncation_cutoff is None:
-                    x = self.w_avg.lerp(x, truncation_psi)
-                else:
-                    x[:, :truncation_cutoff] = self.w_avg.lerp(x[:, :truncation_cutoff], truncation_psi)
         return x
 
 #----------------------------------------------------------------------------
@@ -283,7 +264,6 @@ class MappingWNetwork(torch.nn.Module):
         z = z.reshape(-1, self.z_dim)
         ws = self.layer(z, None)
         ws = ws.reshape(-1, self.num_ws, self.w_dim)
-        print(ws.shape)
         return ws
 
 #----------------------------------------------------------------------------
@@ -517,7 +497,7 @@ class SynthesisNetwork(torch.nn.Module):
             out_channels = channels_dict[res]
             use_fp16 = (res >= fp16_resolution)
             is_last = (res == self.img_resolution)
-            if 16 < res < 256:
+            if 16 < res < self.img_resolution:
                 blocks = torch.nn.ModuleList([SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
                     img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
                 for i, block in enumerate(blocks):
@@ -555,13 +535,13 @@ class SynthesisNetwork(torch.nn.Module):
         bin_regions = {}
         col_regions = {}
         for res, cur_ws in zip(self.block_resolutions, block_ws):
-            if res <= self.img_resolution // 16:
+            if res <= 16:
                 block = getattr(self, f'b{res}')
                 x, img = block(x, img, cur_ws, **block_kwargs)
                 pose = img
                 for i in range(6):
                     regions[i] = (x, img)
-            elif self.img_resolution // 16 < res < self.img_resolution:
+            elif 16 < res < self.img_resolution:
                 for i in range(6):
                     block = getattr(self, f'b{res}{i}')
                     x, img = block(regions[i][0], regions[i][1], cur_ws, **block_kwargs)
@@ -844,7 +824,6 @@ class Discriminator(torch.nn.Module):
         for res in self.block_resolutions:
             if res == self.img_resolution:
                 block = getattr(self, f'b{res}')
-
                 x, img = block(x, img, **block_kwargs)
             elif res == self.img_resolution//2:
                 for i in range(6):
@@ -859,10 +838,9 @@ class Discriminator(torch.nn.Module):
             elif res == 32:
                 for i in range(6):
                     block = getattr(self, f'b{res}{i}')
-                    print("here",x.shape, col_regions[i].shape)
                     x1, img = block(x, bin_regions[i], **block_kwargs)
                     region[i] = (x1, img)
-            elif res == self.img_resolution // 16:
+            elif res == 16:
                 block = getattr(self, f'b{res}')
                 x = torch.stack([region[i][0] for i in range(6)], dim=0).sum(dim=0)
                 x, img = block(x, pose, **block_kwargs)

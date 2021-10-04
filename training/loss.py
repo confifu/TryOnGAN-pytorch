@@ -64,19 +64,20 @@ class StyleGAN2Loss(Loss):
                                     mode='bilinear',
                                     align_corners=True)
         if detach:
-            pmap = pmap.detach().requires_grad(require_grad)
+            pmap = pmap.detach()
+            pmap = pmap.requires_grad_(require_grad)
         region = {}
-        region[0] = 0 < pmap <=1
-        region[1] = 1 < pmap <=2
-        region[2] = 2 < pmap <=3
-        region[3] = 3 < pmap <=4
-        region[4] = 4 < pmap <=5
-        region[5] = 5 < pmap <=6
+        zeros = torch.zeros(pmap.shape).cuda()
+        region[0] = torch.where(torch.bitwise_and(0 < pmap, pmap <=1), pmap, zeros)
+        region[1] = torch.where(torch.bitwise_and(1 < pmap, pmap <=2), pmap, zeros)
+        region[2] = torch.where(torch.bitwise_and(2 < pmap, pmap <=3), pmap, zeros)
+        region[3] = torch.where(torch.bitwise_and(3 < pmap, pmap <=4), pmap, zeros)
+        region[4] = torch.where(torch.bitwise_and(4 < pmap, pmap <=5), pmap, zeros)
+        region[5] = torch.where(torch.bitwise_and(5 < pmap, pmap <=6), pmap, zeros)
         return region
 
     def getColRegionDict(self, img, pmap, detach = False, require_grad= False):
         res = img.shape[-1]
-        print("res in color region dict ", res)
         pmap = torch.nn.functional.interpolate(pmap,
                                     size=(res//2, res//2),
                                     mode='bilinear',
@@ -86,16 +87,18 @@ class StyleGAN2Loss(Loss):
                                     mode='bilinear',
                                     align_corners=True)
 
+        pmap = torch.cat([pmap, pmap, pmap], dim = 1)
         if detach:
-            pmap = pmap.detach().requires_grad(require_grad)
-            img = img.detach().requires_grad(require_grad)
+            pmap = pmap.detach().requires_grad_(require_grad)
+            img = img.detach().requires_grad_(require_grad)
         region = {}
-        region[0] = torch.logical_and(img, 0 < pmap <=1)
-        region[1] = torch.logical_and(img, 1 < pmap <=2)
-        region[2] = torch.logical_and(img, 2 < pmap <=3)
-        region[3] = torch.logical_and(img, 3 < pmap <=4)
-        region[4] = torch.logical_and(img, 4 < pmap <=5)
-        region[5] = torch.logical_and(img, 5 < pmap <=6)
+        zeros = torch.zeros(img.shape).cuda()
+        region[0] = torch.where(torch.bitwise_and(0 < pmap, pmap <=1), img, zeros)
+        region[1] = torch.where(torch.bitwise_and(1 < pmap, pmap <=2), img, zeros)
+        region[2] = torch.where(torch.bitwise_and(2 < pmap, pmap <=3), img, zeros)
+        region[3] = torch.where(torch.bitwise_and(3 < pmap, pmap <=4), img, zeros)
+        region[4] = torch.where(torch.bitwise_and(4 < pmap, pmap <=5), img, zeros)
+        region[5] = torch.where(torch.bitwise_and(5 < pmap, pmap <=6), img, zeros)
         return region
 
     def accumulate_gradients(self, phase, real_img, real_pmap, real_pose, real_c, gen_z, gen_c, sync, gain):
@@ -114,7 +117,8 @@ class StyleGAN2Loss(Loss):
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 loss_Gmain = torch.nn.functional.softplus(-gen_logits) # -log(sigmoid(gen_logits))
                 training_stats.report('Loss/G/loss', loss_Gmain)
-            with torch.autograd.profiler.record_function('Gmain_backward'):
+            #with torch.autograd.profiler.record_function('Gmain_backward'):
+            with torch.autograd.set_detect_anomaly(True):
                 loss_Gmain.mean().mul(gain).backward()
 
         # Gpl: Apply path length regularization.
@@ -168,7 +172,7 @@ class StyleGAN2Loss(Loss):
                 loss_Dr1 = 0
                 if do_Dr1:
                     with torch.autograd.profiler.record_function('r1_grads'), conv2d_gradfix.no_weight_gradients():
-                        inputs = [real_img_tmp, real_pose_tmp] + [real_bin_region_tmp[i] for i in range(6)] + [real_col_region_tmp[i] for i in range(6)]
+                        inputs = [real_img_tmp]#, real_pose_tmp]# + [real_bin_region_tmp[i] for i in range(6)] + [real_col_region_tmp[i] for i in range(6)]
                         r1_grads = torch.autograd.grad(outputs=[real_logits.sum()], inputs=inputs, create_graph=True, only_inputs=True)[0]
                     r1_penalty = r1_grads.square().sum([1,2,3])
                     loss_Dr1 = r1_penalty * (self.r1_gamma / 2)
