@@ -101,11 +101,7 @@ class Dataset(torch.utils.data.Dataset):
         #assert list(parsemap.shape) == self.image_shape
         assert parsemap.dtype == np.uint8
 
-        try:
-            pose = self.get_pose()
-        except IndexError as e:
-            print("got error")
-            return self.__getitem__(idx + 1)
+        pose = self.get_pose()
 
         if self._xflip[idx]:
             assert image.ndim == 3 # CHW
@@ -309,11 +305,16 @@ class ImageFolderDataset(Dataset):
 
     def get_pose(self):
         base = os.path.basename(self.fname)
-        keypoint = self.df[self.df['name'] == base]['keypoints'].tolist()[0]
-        ptlist = keypoint.split(':')
-        ptlist = [float(x) for x in ptlist]
-        map = self.getHeatMap(ptlist)
-        return map
+        keypoint_list = self.df[self.df['name'] == base]['keypoints'].tolist()
+        if len(keypoint_list) > 0:
+            keypoint = keypoint_list[0]
+            ptlist = keypoint.split(':')
+            ptlist = [float(x) for x in ptlist]
+            heatmap = self.getHeatMap(ptlist)
+            return heatmap
+        else:
+            heatmap = torch.zeros(17, 16, 16)
+            return heatmap
 
     def getHeatMap(self, pose):
         '''
