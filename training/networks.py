@@ -490,7 +490,9 @@ class SynthesisNetwork(torch.nn.Module):
             in_channels = channels_dict[res // 2] if res > 4 else 0
             if res == img_resolution:
                 in_channels = 6 * channels_dict[res // 2]
-            if res < 64:
+            if res < 32:
+                img_channels = 17
+            elif res == 32:
                 img_channels = 1
             else:
                 img_channels = 3
@@ -510,6 +512,7 @@ class SynthesisNetwork(torch.nn.Module):
                 self.num_ws += block.num_conv
                 self.num_ws += block.num_torgb
                 setattr(self, f'b{res}', block)
+        self.ptob = Conv2dLayer(17, 1, kernel_size = 1, activation='lrelu')
 
     def forward(self, ws, ret_pose = False, **block_kwargs):
         block_ws = []
@@ -540,7 +543,7 @@ class SynthesisNetwork(torch.nn.Module):
                 x, img = block(x, img, cur_ws, **block_kwargs)
                 pose = img
                 for i in range(6):
-                    regions[i] = (x, img)
+                    regions[i] = (x, self.ptob(img))
             elif 16 < res < self.img_resolution:
                 for i in range(6):
                     block = getattr(self, f'b{res}{i}')
@@ -707,7 +710,7 @@ class DiscriminatorEpilogue(torch.nn.Module):
         cmap_dim,                       # Dimensionality of mapped conditioning label, 0 = no label.
         resolution,                     # Resolution of this block.
         img_channels,                   # Number of input color channels.
-        architecture        = 'resnet', # Architecture: 'orig', 'skip', 'resnet'.
+        architecture        = 'skip', # Architecture: 'orig', 'skip', 'resnet'.
         mbstd_group_size    = 4,        # Group size for the minibatch standard deviation layer, None = entire minibatch.
         mbstd_num_channels  = 1,        # Number of features for the minibatch standard deviation layer, 0 = disable.
         activation          = 'lrelu',  # Activation function: 'relu', 'lrelu', etc.
@@ -774,6 +777,7 @@ class Discriminator(torch.nn.Module):
         mapping_kwargs      = {},       # Arguments for MappingNetwork.
         epilogue_kwargs     = {},       # Arguments for DiscriminatorEpilogue.
     ):
+        architecture = 'skip'
         super().__init__()
         self.c_dim = c_dim
         self.img_resolution = img_resolution
@@ -796,7 +800,9 @@ class Discriminator(torch.nn.Module):
             if res == img_resolution:
                 in_channels = 6 * in_channels
                 tmp_channels = 6 * tmp_channels
-            if res < 64:
+            if res < 32:
+                img_channels = 17
+            elif res == 32:
                 img_channels = 1
             else:
                 img_channels = 3
@@ -816,38 +822,45 @@ class Discriminator(torch.nn.Module):
                 cur_layer_idx += block.num_layers
         if c_dim > 0:
             self.mapping = MappingNetwork(z_dim=0, c_dim=c_dim, w_dim=cmap_dim, num_ws=None, w_avg_beta=None, **mapping_kwargs)
-        self.b4 = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, img_channels = 1, **epilogue_kwargs, **common_kwargs)
+        self.b4 = DiscriminatorEpilogue(channels_dict[4], cmap_dim=cmap_dim, resolution=4, img_channels = 17, **epilogue_kwargs, **common_kwargs)
 
     def forward(self, img, pose, bin_regions, col_regions, c, **block_kwargs):
         x = None
-        region = {}
-        for res in self.block_resolutions:
-            if res == self.img_resolution:
-                block = getattr(self, f'b{res}')
-                x, img = block(x, img, **block_kwargs)
-            elif res == self.img_resolution//2:
-                for i in range(6):
-                    block = getattr(self, f'b{res}{i}')
-                    x1, img = block(x, col_regions[i], **block_kwargs)
-                    region[i] = (x1, img)
-            elif self.img_resolution//2 > res >= 64:
-                for i in range(6):
-                    block = getattr(self, f'b{res}{i}')
-                    x, img = block(region[i][0], region[i][1], **block_kwargs)
-                    region[i] = (x, img)
-            elif res == 32:
-                for i in range(6):
-                    block = getattr(self, f'b{res}{i}')
-                    x1, img = block(x, bin_regions[i], **block_kwargs)
-                    region[i] = (x1, img)
-            elif res == 16:
-                block = getattr(self, f'b{res}')
-                x = torch.stack([region[i][0] for i in range(6)], dim=0).sum(dim=0)
-                x, img = block(x, pose, **block_kwargs)
-            else :
-                block = getattr(self, f'b{res}')
-                x, img = block(x, img, **block_kwargs)
+        res = self.block_resolutions
 
+        #256
+        block = getattr(self, f'b{res[0]}')
+        x, img = block(x, img, **block_kwargs)
+
+        xs = []
+        imgs = []
+        #128
+        for i in range(6):
+            block = getattr(self, f'b{res[1]}{i}')
+            x_temp, img_temp = block(x, col_regions[i], **block_kwargs)
+            xs.append(x_temp)
+            imgs.append(img_temp)
+
+        #64
+        for i in range(6):
+            block = getattr(self, f'b{res[2]}{i}')
+            xs[i], imgs[i] = block(xs[i], imgs[i], **block_kwargs)
+
+        #32
+        for i in range(6):
+            block = getattr(self, f'b{res[3]}{i}')
+            xs[i], imgs[i] = block(xs[i], bin_regions[i], **block_kwargs)
+
+        x = torch.stack([xs[i] for i in range(6)], dim=0).sum(dim=0)
+
+        #16
+        block = getattr(self, f'b{res[4]}')
+        x, img = block(x, pose, **block_kwargs)
+        
+        #8-4
+        for cur_res in range(5, len(res)):
+            block = getattr(self, f'b{res[cur_res]}')
+            x, img = block(x, img, **block_kwargs)
 
         cmap = None
         if self.c_dim > 0:
