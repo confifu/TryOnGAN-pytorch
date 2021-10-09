@@ -129,8 +129,8 @@ class StyleGAN2Loss(Loss):
                 with torch.autograd.profiler.record_function('pl_grads'), conv2d_gradfix.no_weight_gradients():
                     outputs = [(gen_img * torch.randn_like(gen_img) / np.sqrt(gen_img.shape[2] * gen_img.shape[3])).sum()]
                     outputs.extend([(gen_pose * torch.randn_like(gen_pose) / np.sqrt(gen_pose.shape[2] * gen_pose.shape[3])).sum()])
-                    outputs.extend([(gen_bin_regions[i] * torch.randn_like(gen_bin_regions[i]) / np.sqrt(gen_bin_regions[i].shape[2] * gen_bin_regions[i].shape[3])).sum()] for i in range(6))
-                    outputs.extend([(gen_col_regions[i] * torch.randn_like(gen_col_regions[i]) / np.sqrt(gen_col_regions[i].shape[2] * gen_col_regions[i].shape[3])).sum()] for i in range(6))
+                    outputs.extend([(gen_bin_regions[i] * torch.randn_like(gen_bin_regions[i]) / np.sqrt(gen_bin_regions[i].shape[2] * gen_bin_regions[i].shape[3])).sum() for i in range(6)])
+                    outputs.extend([(gen_col_regions[i] * torch.randn_like(gen_col_regions[i]) / np.sqrt(gen_col_regions[i].shape[2] * gen_col_regions[i].shape[3])).sum() for i in range(6)])
                     pl_grads = torch.autograd.grad(outputs=outputs, inputs=[gen_ws], create_graph=True, only_inputs=True)[0]
                 pl_lengths = pl_grads.square().sum(2).mean(1).sqrt()
                 pl_mean = self.pl_mean.lerp(pl_lengths.mean(), self.pl_decay)
