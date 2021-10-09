@@ -126,9 +126,12 @@ class StyleGAN2Loss(Loss):
             with torch.autograd.profiler.record_function('Gpl_forward'):
                 batch_size = gen_z.shape[0] // self.pl_batch_shrink
                 gen_pose, gen_bin_regions, gen_col_regions, gen_img, gen_ws = self.run_G(gen_z[:batch_size], gen_c[:batch_size], ret_pose = True, sync=sync)
-                pl_noise = torch.randn_like(gen_img) / np.sqrt(gen_img.shape[2] * gen_img.shape[3])
                 with torch.autograd.profiler.record_function('pl_grads'), conv2d_gradfix.no_weight_gradients():
-                    pl_grads = torch.autograd.grad(outputs=[(gen_img * pl_noise).sum()], inputs=[gen_ws], create_graph=True, only_inputs=True)[0]
+                    outputs = [(gen_img * torch.randn_like(gen_img) / np.sqrt(gen_img.shape[2] * gen_img.shape[3])).sum()]
+                    outputs.extend([(gen_pose * torch.randn_like(gen_pose) / np.sqrt(gen_pose.shape[2] * gen_pose.shape[3])).sum()])
+                    outputs.extend([(gen_bin_regions[i] * torch.randn_like(gen_bin_regions[i]) / np.sqrt(gen_bin_regions[i].shape[2] * gen_bin_regions[i].shape[3])).sum()] for i in range(6))
+                    outputs.extend([(gen_col_regions[i] * torch.randn_like(gen_col_regions[i]) / np.sqrt(gen_col_regions[i].shape[2] * gen_col_regions[i].shape[3])).sum()] for i in range(6))
+                    pl_grads = torch.autograd.grad(outputs=outputs, inputs=[gen_ws], create_graph=True, only_inputs=True)[0]
                 pl_lengths = pl_grads.square().sum(2).mean(1).sqrt()
                 pl_mean = self.pl_mean.lerp(pl_lengths.mean(), self.pl_decay)
                 self.pl_mean.copy_(pl_mean.detach())
