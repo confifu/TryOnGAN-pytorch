@@ -1,4 +1,4 @@
-﻿# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
 #
 # NVIDIA CORPORATION and its licensors retain all intellectual property
 # and proprietary rights in and to this software, related documentation
@@ -537,10 +537,13 @@ class SynthesisNetwork(torch.nn.Module):
         regions = {}
         bin_regions = {}
         col_regions = {}
-        for res, cur_ws in zip(self.block_resolutions, block_ws):
+        ws_idx = 0
+        for res in self.block_resolutions:
+            cur_ws = block_ws[ws_idx]
             if res <= 16:
                 block = getattr(self, f'b{res}')
                 x, img = block(x, img, cur_ws, **block_kwargs)
+                ws_idx += 1
                 pose = img
                 for i in range(6):
                     regions[i] = (x, self.ptob(img))
@@ -548,6 +551,7 @@ class SynthesisNetwork(torch.nn.Module):
                 for i in range(6):
                     block = getattr(self, f'b{res}{i}')
                     x, img = block(regions[i][0], regions[i][1], cur_ws, **block_kwargs)
+                    ws_idx += 1
                     regions[i] = (x, img)
                     if res == 32:
                         bin_regions[i] = img
@@ -560,6 +564,7 @@ class SynthesisNetwork(torch.nn.Module):
 
                 block = getattr(self, f'b{res}')
                 x, img = block(x, img, cur_ws, **block_kwargs)
+                ws_idx += 1
         if ret_pose:
             return pose, bin_regions, col_regions, img
         return img
@@ -797,9 +802,6 @@ class Discriminator(torch.nn.Module):
         for res in self.block_resolutions:
             in_channels = channels_dict[res] if res < img_resolution else 0
             tmp_channels = channels_dict[res]
-            if res == img_resolution:
-                in_channels = 6 * in_channels
-                tmp_channels = 6 * tmp_channels
             if res < 32:
                 img_channels = 17
             elif res == 32:
