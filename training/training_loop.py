@@ -230,13 +230,21 @@ def training_loop(
     if rank == 0:
         print('Exporting sample images...')
         grid_size, images, labels, pose, parsemaps = setup_snapshot_image_grid(training_set=training_set)
+        print(pose.shape)
         save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0,255], grid_size=grid_size)
-        save_image_grid(parsemaps, os.path.join(run_dir, 'parsemaps.png'), drange=[0,7], grid_size=grid_size)
+        save_image_grid(parsemaps, os.path.join(run_dir, 'realparsemaps.png'), drange=[0,7], grid_size=grid_size)
+        save_image_grid(np.sum(pose, axis = 1, keepdims=True), os.path.join(run_dir, 'realpose.png'), drange=[0,1], grid_size=grid_size)
         grid_z = torch.randn([labels.shape[0], G.mapping.num_ws, G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
-        images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+        images = torch.cat([torch.sum(G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[0], dim=1,keepdim=True).cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+        save_image_grid(images, os.path.join(run_dir, 'fakes_pose_init.png'), drange=[-1,1], grid_size=grid_size)
+        for i in range(6):
+            bina = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[1][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+            save_image_grid(bina, os.path.join(run_dir, 'fakes_bin_' + str(i) + 'init.png'), drange=[-1,1], grid_size=grid_size)
+            col = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[2][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+            save_image_grid(col, os.path.join(run_dir, 'fakes_col' + str(i) + 'init.png'), drange=[-1,1], grid_size=grid_size)
+        images = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[3].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
         save_image_grid(images, os.path.join(run_dir, 'fakes_init.png'), drange=[-1,1], grid_size=grid_size)
-
     # Initialize logs.
     if rank == 0:
         print('Initializing logs...')
@@ -360,7 +368,14 @@ def training_loop(
 
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
-            images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+            images = torch.cat([torch.sum(G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[0], dim=1,keepdim=True).cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+            save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_pose.png'), drange=[-1,1], grid_size=grid_size)
+            for i in range(6):
+                bina = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[1][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+                save_image_grid(bina, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_bin' + str(i) + '.png'), drange=[-1,1], grid_size=grid_size)
+                col = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[2][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
+                save_image_grid(col, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_col' + str(i) + '.png'), drange=[-1,1], grid_size=grid_size)
+            images = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[3].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
             save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png'), drange=[-1,1], grid_size=grid_size)
 
         # Save network snapshot.
