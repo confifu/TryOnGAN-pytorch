@@ -1,4 +1,4 @@
-# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
+﻿# Copyright (c) 2021, NVIDIA CORPORATION.  All rights reserved.
 #
 # NVIDIA CORPORATION and its licensors retain all intellectual property
 # and proprietary rights in and to this software, related documentation
@@ -486,85 +486,98 @@ class SynthesisNetwork(torch.nn.Module):
         fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
 
         self.num_ws = 0
-        for res in self.block_resolutions:
-            in_channels = channels_dict[res // 2] if res > 4 else 0
-            if res == img_resolution:
-                in_channels = 6 * channels_dict[res // 2]
-            if res < 32:
-                img_channels = 17
-            elif res == 32:
-                img_channels = 1
-            else:
-                img_channels = 3
-            out_channels = channels_dict[res]
-            use_fp16 = (res >= fp16_resolution)
-            is_last = (res == self.img_resolution)
-            if 16 < res < self.img_resolution:
-                blocks = torch.nn.ModuleList([SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
-                    img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
-                for i, block in enumerate(blocks):
-                    self.num_ws += block.num_conv
-                    self.num_ws += block.num_torgb
-                    setattr(self, f'b{res}{i}', block)
-            else:
-                block = SynthesisBlock(in_channels, out_channels, w_dim=w_dim, resolution=res,
-                    img_channels=img_channels, is_last=is_last, use_fp16=use_fp16, **block_kwargs)
-                self.num_ws += block.num_conv
-                self.num_ws += block.num_torgb
-                setattr(self, f'b{res}', block)
-        self.ptob = Conv2dLayer(17, 1, kernel_size = 1, activation='lrelu')
+        res = 4
+        use_fp16 = (res >= fp16_resolution)
+        self.poseBlock1 = SynthesisBlock(0, 512, w_dim=w_dim, resolution=res,
+                    img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
+        self.num_ws += self.poseBlock1.num_conv + self.poseBlock1.num_torgb
+
+        res = 8
+        use_fp16 = (res >= fp16_resolution)
+        self.poseBlock2 = SynthesisBlock(512, 512, w_dim=w_dim, resolution=res,
+                    img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
+        self.num_ws += self.poseBlock2.num_conv + self.poseBlock2.num_torgb
+
+        res = 16
+        use_fp16 = (res >= fp16_resolution)
+        self.poseBlock3 = SynthesisBlock(512, 512, w_dim=w_dim, resolution=res,
+                    img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
+        self.num_ws += self.poseBlock3.num_conv + self.poseBlock3.num_torgb
+
+        #binary region
+        res = 32
+        use_fp16 = (res >= fp16_resolution)
+        blocks = torch.nn.ModuleList([SynthesisBlock(17, 512, w_dim=w_dim, resolution=res,
+                    img_channels=1, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
+        for i, block in enumerate(blocks):
+            self.num_ws += block.num_conv + block.num_torgb
+            setattr(self, f'binBlock{i}', block)
+
+        #color region
+        res = 64
+        use_fp16 = (res >= fp16_resolution)
+        blocks = torch.nn.ModuleList([SynthesisBlock(6, 256, w_dim=w_dim, resolution=res,
+                    img_channels=3, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
+        for i, block in enumerate(blocks):
+            self.num_ws += block.num_conv + block.num_torgb
+            setattr(self, f'colBlock1{i}', block)
+        
+        res = 128
+        use_fp16 = (res >= fp16_resolution)
+        blocks = torch.nn.ModuleList([SynthesisBlock(256, 128, w_dim=w_dim, resolution=res,
+                    img_channels=3, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
+        for i, block in enumerate(blocks):
+            self.num_ws += block.num_conv + block.num_torgb
+            setattr(self, f'colBlock2{i}', block)
+
+        #final
+        res = 256
+        use_fp16 = (res >= fp16_resolution)
+        self.finalBlock = SynthesisBlock(18, 64, w_dim=w_dim, resolution=res,
+                    img_channels = 3, is_last=False, use_fp16=use_fp16, **block_kwargs)
+        self.num_ws += self.finalBlock.num_conv + self.finalBlock.num_torgb    
+
+    def get_block_output(self, block, block_ws, w_idx, x, img, **block_kwargs):
+        block_w = block_ws.narrow(1, w_idx, block.num_conv + block.num_torgb)
+        x, img = block(x, img, block_w, **block_kwargs)
+        w_idx += block.num_conv + block.num_torgb
+        return x, img, w_idx
 
     def forward(self, ws, ret_pose = False, **block_kwargs):
-        block_ws = []
-        with torch.autograd.profiler.record_function('split_ws'):
-            misc.assert_shape(ws, [None, self.num_ws, self.w_dim])
-            ws = ws.to(torch.float32)
-            w_idx = 0
-            for res in self.block_resolutions:
-                if 16 < res < 256:
-                    for i in range(6):
-                        block = getattr(self, f'b{res}{i}')
-                        block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
-                        w_idx += block.num_conv + block.num_torgb
-                else:
-                    block = getattr(self, f'b{res}')
-                    block_ws.append(ws.narrow(1, w_idx, block.num_conv + block.num_torgb))
-                    w_idx += block.num_conv + block.num_torgb
 
-
+        #pose
         x = img = None
-        pose = None
-        regions = {}
+        w_idx = 0
+        x, img, w_idx = self.get_block_output(self.poseBlock1, ws, w_idx, x, img, **block_kwargs)
+        x, img, w_idx = self.get_block_output(self.poseBlock2, ws, w_idx, x, img, **block_kwargs)
+        x, pose, w_idx = self.get_block_output(self.poseBlock3, ws, w_idx, x, img, **block_kwargs)
+        
+        #bin regions
         bin_regions = {}
-        col_regions = {}
-        ws_idx = 0
-        for res in self.block_resolutions:
-            cur_ws = block_ws[ws_idx]
-            if res <= 16:
-                block = getattr(self, f'b{res}')
-                x, img = block(x, img, cur_ws, **block_kwargs)
-                ws_idx += 1
-                pose = img
-                for i in range(6):
-                    regions[i] = (x, self.ptob(img))
-            elif 16 < res < self.img_resolution:
-                for i in range(6):
-                    block = getattr(self, f'b{res}{i}')
-                    x, img = block(regions[i][0], regions[i][1], cur_ws, **block_kwargs)
-                    ws_idx += 1
-                    regions[i] = (x, img)
-                    if res == 32:
-                        bin_regions[i] = img
-                        regions[i] = (x, torch.cat([img, img, img], dim = 1))
-                    if res == self.img_resolution//2:
-                        col_regions[i] = img
-            else:
-                x = torch.cat([regions[i][0] for i in range(6)], dim = 1)
-                img = torch.stack([regions[i][1] for i in range(6)], dim =0).sum(dim=0)
+        for i in range(6):
+            block = getattr(self, f'binBlock{i}')
+            _x_tmp, bin_regions[i], w_idx = self.get_block_output(block, ws, w_idx, pose, None, **block_kwargs)
 
-                block = getattr(self, f'b{res}')
-                x, img = block(x, img, cur_ws, **block_kwargs)
-                ws_idx += 1
+        #combine all bin regions
+        bin_all = torch.cat([bin_regions[i] for i in range(6)], dim = 1)
+
+        #col regions
+        col_regions = {}
+        xs = {}
+        for i in range(6):
+            block = getattr(self, f'colBlock1{i}')
+            xs[i], col_regions[i], w_idx = self.get_block_output(block, ws, w_idx, bin_all, None, **block_kwargs)
+
+        for i in range(6):
+            block = getattr(self, f'colBlock2{i}')
+            xs[i], col_regions[i], w_idx = self.get_block_output(block, ws, w_idx, xs[i], col_regions[i], **block_kwargs)
+
+        #combine all col regions
+        col_all = torch.cat([col_regions[i] for i in range(6)], dim = 1)
+
+        #final layer
+        x, img, _ =  self.get_block_output(self.finalBlock, ws, w_idx, col_all, None, **block_kwargs)
+
         if ret_pose:
             return pose, bin_regions, col_regions, img
         return img
