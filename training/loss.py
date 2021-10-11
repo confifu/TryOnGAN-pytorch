@@ -67,13 +67,15 @@ class StyleGAN2Loss(Loss):
             pmap = pmap.detach()
             pmap = pmap.requires_grad_(require_grad)
         region = {}
-        zeros = torch.zeros(pmap.shape).cuda()
-        region[0] = torch.where(torch.bitwise_and(0 < pmap, pmap <=1), pmap, zeros)
-        region[1] = torch.where(torch.bitwise_and(1 < pmap, pmap <=2), pmap, zeros)
-        region[2] = torch.where(torch.bitwise_and(2 < pmap, pmap <=3), pmap, zeros)
-        region[3] = torch.where(torch.bitwise_and(3 < pmap, pmap <=4), pmap, zeros)
-        region[4] = torch.where(torch.bitwise_and(4 < pmap, pmap <=5), pmap, zeros)
-        region[5] = torch.where(torch.bitwise_and(5 < pmap, pmap <=6), pmap, zeros)
+        hi = torch.ones(pmap.shape).cuda()
+        lo = -torch.ones(pmap.shape).cuda()
+        region[0] = torch.where(0 == pmap, hi, lo)
+        region[1] = torch.where(1 == pmap, hi, lo)
+        region[2] = torch.where(2 == pmap, hi, lo)
+        region[3] = torch.where(3 == pmap, hi, lo)
+        region[4] = torch.where(4 == pmap, hi, lo)
+        region[5] = torch.where(5 == pmap, hi, lo)
+        region[6] = torch.where(6 == pmap, hi, lo)
         return region
 
     def getColRegionDict(self, img, pmap, detach = False, require_grad= False):
@@ -92,13 +94,14 @@ class StyleGAN2Loss(Loss):
             pmap = pmap.detach().requires_grad_(require_grad)
             img = img.detach().requires_grad_(require_grad)
         region = {}
-        zeros = torch.zeros(img.shape).cuda()
-        region[0] = torch.where(torch.bitwise_and(0 < pmap, pmap <=1), img, zeros)
-        region[1] = torch.where(torch.bitwise_and(1 < pmap, pmap <=2), img, zeros)
-        region[2] = torch.where(torch.bitwise_and(2 < pmap, pmap <=3), img, zeros)
-        region[3] = torch.where(torch.bitwise_and(3 < pmap, pmap <=4), img, zeros)
-        region[4] = torch.where(torch.bitwise_and(4 < pmap, pmap <=5), img, zeros)
-        region[5] = torch.where(torch.bitwise_and(5 < pmap, pmap <=6), img, zeros)
+        lo = -torch.ones(img.shape).cuda()
+        region[0] = torch.where(0 == pmap, img, lo)
+        region[1] = torch.where(1 == pmap, img, lo)
+        region[2] = torch.where(2 == pmap, img, lo)
+        region[3] = torch.where(3 == pmap, img, lo)
+        region[4] = torch.where(4 == pmap, img, lo)
+        region[5] = torch.where(5 == pmap, img, lo)
+        region[6] = torch.where(6 == pmap, img, lo)
         return region
 
     def accumulate_gradients(self, phase, real_img, real_pmap, real_pose, real_c, gen_z, gen_c, sync, gain):
