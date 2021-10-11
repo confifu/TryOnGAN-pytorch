@@ -510,7 +510,7 @@ class SynthesisNetwork(torch.nn.Module):
             in_channel = channels_dict[reslist[i]] if i > 0 else 17
             out_channel = channels_dict[reslist[i+1]]
             blocks = torch.nn.ModuleList([SynthesisBlock(in_channel, out_channel, w_dim=w_dim, resolution=res, up = up, down = down,
-                        img_channels=1, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
+                        img_channels=1, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(7)])
             for j, block in enumerate(blocks):
                 self.num_ws += block.num_conv + block.num_torgb
                 setattr(self, f'binBlock{i}_{j}', block)
@@ -526,7 +526,7 @@ class SynthesisNetwork(torch.nn.Module):
             in_channel = channels_dict[reslist[i]] if i > 0 else 1
             out_channel = channels_dict[reslist[i+1]]
             blocks = torch.nn.ModuleList([SynthesisBlock(in_channel, out_channel, w_dim=w_dim, resolution=res, up = up, down = down,
-                        img_channels=3, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
+                        img_channels=3, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(7)])
             for j, block in enumerate(blocks):
                 self.num_ws += block.num_conv + block.num_torgb
                 setattr(self, f'colBlock{i}_{j}', block)
@@ -538,7 +538,7 @@ class SynthesisNetwork(torch.nn.Module):
             use_fp16 = (res >= fp16_resolution)
             up = 2 if res > reslist[i] else 1
             down = 2 if res < reslist[i] else 1
-            in_channel = channels_dict[reslist[i]] if i > 0 else 18
+            in_channel = channels_dict[reslist[i]] if i > 0 else 21
             out_channel = channels_dict[reslist[i+1]]
             block = SynthesisBlock(in_channel, out_channel, w_dim=w_dim, resolution=res, up = up, down = down,
                         img_channels = 3, is_last=False, use_fp16=use_fp16, **block_kwargs)
@@ -562,22 +562,22 @@ class SynthesisNetwork(torch.nn.Module):
         pose = img
 
         #bin regions
-        xs = {0:pose, 1:pose, 2:pose, 3:pose, 4:pose, 5:pose}
-        bin_regions = {0:None, 1:None, 2:None, 3:None, 4:None, 5:None}
+        xs = {i:pose for i in range(7)}
+        bin_regions = {i:None for i in range(7)}
         for i in range(3):
-            for j in range(6):
+            for j in range(7):
                 block = getattr(self, f'binBlock{i}_{j}')
                 xs[j], bin_regions[j], w_idx = self.get_block_output(block, ws, w_idx, xs[j], bin_regions[j], **block_kwargs)
 
         #col regions
-        xs = {i : bin_regions[i] for i in range(6)}
-        col_regions = {0:None, 1:None, 2:None, 3:None, 4:None, 5:None}
+        xs = {i : bin_regions[i] for i in range(7)}
+        col_regions = {i:None for i in range(7)}
         for i in range(4):
-            for j in range(6):
+            for j in range(7):
                 block = getattr(self, f'colBlock{i}_{j}')
                 xs[j], col_regions[j], w_idx = self.get_block_output(block, ws, w_idx, xs[j], col_regions[j], **block_kwargs)
         #combine all col regions
-        col_all = torch.cat([col_regions[i] for i in range(6)], dim = 1)
+        col_all = torch.cat([col_regions[i] for i in range(7)], dim = 1)
 
         #final layer
         x = col_all
@@ -825,10 +825,10 @@ class Discriminator(torch.nn.Module):
                 in_channels += 17
                 tmp_channels += 17
             elif res == 64:
-                in_channels += 6
-                tmp_channels += 6
+                in_channels += 7
+                tmp_channels += 7
             elif res ==256:
-                img_channels = 21
+                img_channels = 24
             out_channels = channels_dict[res // 2]
             use_fp16 = (res >= fp16_resolution)
 
@@ -845,7 +845,7 @@ class Discriminator(torch.nn.Module):
         res = self.block_resolutions
 
         #256
-        img = torch.cat([img] + [col_regions[i] for i in range(6)], dim = 1)
+        img = torch.cat([img] + [col_regions[i] for i in range(7)], dim = 1)
         block = getattr(self, f'b{res[0]}')
         x, img = block(x, img, **block_kwargs)
 
@@ -853,7 +853,7 @@ class Discriminator(torch.nn.Module):
         x, img = block(x, img, **block_kwargs)
 
         #64
-        x = torch.cat([x] + [bin_regions[i] for i in range(6)], dim = 1)
+        x = torch.cat([x] + [bin_regions[i] for i in range(7)], dim = 1)
         block = getattr(self, f'b{res[2]}')
         x, img = block(x, img, **block_kwargs)
 

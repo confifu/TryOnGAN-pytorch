@@ -60,15 +60,17 @@ class StyleGAN2Loss(Loss):
         '''
         #reshape pmap to 32x32
         pmap = torch.nn.functional.interpolate(pmap,
-                                    size=(32, 32),
+                                    size=(64, 64),
                                     mode='bilinear',
                                     align_corners=True)
+        hi = torch.ones(pmap.shape).cuda()
+        lo = -torch.ones(pmap.shape).cuda()
+        hi = hi.requires_grad_(require_grad)
+        lo = lo.requires_grad_(require_grad)
         if detach:
             pmap = pmap.detach()
             pmap = pmap.requires_grad_(require_grad)
         region = {}
-        hi = torch.ones(pmap.shape).cuda()
-        lo = -torch.ones(pmap.shape).cuda()
         region[0] = torch.where(0 == pmap, hi, lo)
         region[1] = torch.where(1 == pmap, hi, lo)
         region[2] = torch.where(2 == pmap, hi, lo)
@@ -79,6 +81,7 @@ class StyleGAN2Loss(Loss):
         return region
 
     def getColRegionDict(self, img, pmap, detach = False, require_grad= False):
+        '''
         res = img.shape[-1]
         pmap = torch.nn.functional.interpolate(pmap,
                                     size=(res//2, res//2),
@@ -88,13 +91,14 @@ class StyleGAN2Loss(Loss):
                                     size=(res//2, res//2),
                                     mode='bilinear',
                                     align_corners=True)
-
+        '''
         pmap = torch.cat([pmap, pmap, pmap], dim = 1)
+        lo = -torch.ones(img.shape).cuda()
+        lo = lo.requires_grad_(require_grad)
         if detach:
             pmap = pmap.detach().requires_grad_(require_grad)
             img = img.detach().requires_grad_(require_grad)
         region = {}
-        lo = -torch.ones(img.shape).cuda()
         region[0] = torch.where(0 == pmap, img, lo)
         region[1] = torch.where(1 == pmap, img, lo)
         region[2] = torch.where(2 == pmap, img, lo)
@@ -132,8 +136,8 @@ class StyleGAN2Loss(Loss):
                 with torch.autograd.profiler.record_function('pl_grads'), conv2d_gradfix.no_weight_gradients():
                     outputs = [(gen_img * torch.randn_like(gen_img) / np.sqrt(gen_img.shape[2] * gen_img.shape[3])).sum()]
                     outputs.extend([(gen_pose * torch.randn_like(gen_pose) / np.sqrt(gen_pose.shape[2] * gen_pose.shape[3])).sum()])
-                    outputs.extend([(gen_bin_regions[i] * torch.randn_like(gen_bin_regions[i]) / np.sqrt(gen_bin_regions[i].shape[2] * gen_bin_regions[i].shape[3])).sum() for i in range(6)])
-                    outputs.extend([(gen_col_regions[i] * torch.randn_like(gen_col_regions[i]) / np.sqrt(gen_col_regions[i].shape[2] * gen_col_regions[i].shape[3])).sum() for i in range(6)])
+                    outputs.extend([(gen_bin_regions[i] * torch.randn_like(gen_bin_regions[i]) / np.sqrt(gen_bin_regions[i].shape[2] * gen_bin_regions[i].shape[3])).sum() for i in range(7)])
+                    outputs.extend([(gen_col_regions[i] * torch.randn_like(gen_col_regions[i]) / np.sqrt(gen_col_regions[i].shape[2] * gen_col_regions[i].shape[3])).sum() for i in range(7)])
                     pl_grads = torch.autograd.grad(outputs=outputs, inputs=[gen_ws], create_graph=True, only_inputs=True)[0]
                 pl_lengths = pl_grads.square().sum(2).mean(1).sqrt()
                 pl_mean = self.pl_mean.lerp(pl_lengths.mean(), self.pl_decay)
@@ -180,8 +184,8 @@ class StyleGAN2Loss(Loss):
                     with torch.autograd.profiler.record_function('r1_grads'), conv2d_gradfix.no_weight_gradients():
                         try:
                             inputs = [real_img_tmp, real_pose_tmp]
-                            inputs.extend([real_bin_region_tmp[i] for i in range(6)])
-                            inputs.extend([real_col_region_tmp[i] for i in range(6)])
+                            inputs.extend([real_bin_region_tmp[i] for i in range(7)])
+                            inputs.extend([real_col_region_tmp[i] for i in range(7)])
                             r1_grads = torch.autograd.grad(outputs=[real_logits.sum()], inputs=inputs, create_graph=True, only_inputs=True)[0]
                         except:
                             import traceback

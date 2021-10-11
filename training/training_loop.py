@@ -238,7 +238,7 @@ def training_loop(
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
         images = torch.cat([torch.sum(G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[0], dim=1,keepdim=True).cpu() for z, c in zip(grid_z, grid_c)]).numpy()
         save_image_grid(images, os.path.join(run_dir, 'fakes_pose_init.png'), drange=[-1,1], grid_size=grid_size)
-        for i in range(6):
+        for i in range(7):
             bina = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[1][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
             save_image_grid(bina, os.path.join(run_dir, 'fakes_bin_' + str(i) + 'init.png'), drange=[-1,1], grid_size=grid_size)
             col = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[2][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
@@ -370,7 +370,7 @@ def training_loop(
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
             images = torch.cat([torch.sum(G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[0], dim=1,keepdim=True).cpu() for z, c in zip(grid_z, grid_c)]).numpy()
             save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_pose.png'), drange=[-1,1], grid_size=grid_size)
-            for i in range(6):
+            for i in range(7):
                 bina = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[1][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
                 save_image_grid(bina, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_bin' + str(i) + '.png'), drange=[-1,1], grid_size=grid_size)
                 col = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[2][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
