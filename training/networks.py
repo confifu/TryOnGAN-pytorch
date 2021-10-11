@@ -276,6 +276,7 @@ class SynthesisLayer(torch.nn.Module):
         resolution,                     # Resolution of this layer.
         kernel_size     = 3,            # Convolution kernel size.
         up              = 1,            # Integer upsampling factor.
+        down            = 1,
         use_noise       = True,         # Enable noise input?
         activation      = 'lrelu',      # Activation function: 'relu', 'lrelu', etc.
         resample_filter = [1,3,3,1],    # Low-pass filter to apply when resampling activations.
@@ -285,6 +286,7 @@ class SynthesisLayer(torch.nn.Module):
         super().__init__()
         self.resolution = resolution
         self.up = up
+        self.down = down
         self.use_noise = use_noise
         self.activation = activation
         self.conv_clamp = conv_clamp
@@ -301,8 +303,16 @@ class SynthesisLayer(torch.nn.Module):
         self.bias = torch.nn.Parameter(torch.zeros([out_channels]))
 
     def forward(self, x, w, styles=None, noise_mode='random', fused_modconv=True, gain=1):
+        '''
+        output will have resolution self.resolution
+        '''
         assert noise_mode in ['random', 'const', 'none']
-        in_resolution = self.resolution // self.up
+        if self.up > 1:
+            in_resolution = self.resolution // self.up
+        elif self.down > 1:
+            in_resolution = self.resolution * self.down
+        else :
+            in_resolution = self.resolution
         misc.assert_shape(x, [None, self.weight.shape[1], in_resolution, in_resolution])
         if styles is None:
             styles = self.affine(w)
@@ -313,7 +323,7 @@ class SynthesisLayer(torch.nn.Module):
             noise = self.noise_const * self.noise_strength
 
         flip_weight = (self.up == 1) # slightly faster
-        x = modulated_conv2d(x=x, weight=self.weight, styles=styles, noise=noise, up=self.up,
+        x = modulated_conv2d(x=x, weight=self.weight, styles=styles, noise=noise, up=self.up, down = self.down,
             padding=self.padding, resample_filter=self.resample_filter, flip_weight=flip_weight, fused_modconv=fused_modconv)
 
         act_gain = self.act_gain * gain
@@ -352,6 +362,8 @@ class SynthesisBlock(torch.nn.Module):
         resolution,                         # Resolution of this block.
         img_channels,                       # Number of output color channels.
         is_last,                            # Is this the last block?
+        up = 1,
+        down = 1,
         architecture        = 'skip',       # Architecture: 'orig', 'skip', 'resnet'.
         resample_filter     = [1,3,3,1],    # Low-pass filter to apply when resampling activations.
         conv_clamp          = None,         # Clamp the output of convolution layers to +-X, None = disable clamping.
@@ -372,12 +384,14 @@ class SynthesisBlock(torch.nn.Module):
         self.register_buffer('resample_filter', upfirdn2d.setup_filter(resample_filter))
         self.num_conv = 0
         self.num_torgb = 0
+        self.up = up
+        self.down = down
 
         if in_channels == 0:
             self.const = torch.nn.Parameter(torch.randn([out_channels, resolution, resolution]))
 
         if in_channels != 0:
-            self.conv0 = SynthesisLayer(in_channels, out_channels, w_dim=w_dim, resolution=resolution, up=2,
+            self.conv0 = SynthesisLayer(in_channels, out_channels, w_dim=w_dim, resolution=resolution, up=self.up, down=self.down,
                 resample_filter=resample_filter, conv_clamp=conv_clamp, channels_last=self.channels_last, **layer_kwargs)
             self.num_conv += 1
 
@@ -391,14 +405,12 @@ class SynthesisBlock(torch.nn.Module):
             self.num_torgb += 1
 
         if in_channels != 0 and architecture == 'resnet':
-            self.skip = Conv2dLayer(in_channels, out_channels, kernel_size=1, bias=False, up=2,
+            self.skip = Conv2dLayer(in_channels, out_channels, kernel_size=1, bias=False, up=self.up, down = self.down,
                 resample_filter=resample_filter, channels_last=self.channels_last)
 
-    def forward(self, x, img, ws, styles = None, force_fp32=False, fused_modconv=None, **layer_kwargs):
+    def forward(self, x, img, ws, force_fp32=False, fused_modconv=None, **layer_kwargs):
         misc.assert_shape(ws, [None, self.num_conv + self.num_torgb, self.w_dim])
         w_iter = iter(ws.unbind(dim=1))
-        if styles is not None:
-            styles_iter = iter(styles)
         dtype = torch.float16 if self.use_fp16 and not force_fp32 else torch.float32
         memory_format = torch.channels_last if self.channels_last and not force_fp32 else torch.contiguous_format
         if fused_modconv is None:
@@ -410,54 +422,43 @@ class SynthesisBlock(torch.nn.Module):
             x = self.const.to(dtype=dtype, memory_format=memory_format)
             x = x.unsqueeze(0).repeat([ws.shape[0], 1, 1, 1])
         else:
-            misc.assert_shape(x, [None, self.in_channels, self.resolution // 2, self.resolution // 2])
-            x = x.to(dtype=dtype, memory_format=memory_format)
+            if self.up > 1:
+                misc.assert_shape(x, [None, self.in_channels, self.resolution // 2, self.resolution // 2])
+                x = x.to(dtype=dtype, memory_format=memory_format)
+            elif self.down > 1:
+                misc.assert_shape(x, [None, self.in_channels, self.resolution * 2, self.resolution * 2])
+                x = x.to(dtype=dtype, memory_format=memory_format)
+            else:
+                misc.assert_shape(x, [None, self.in_channels, self.resolution, self.resolution])
+                x = x.to(dtype=dtype, memory_format=memory_format)
 
         # Main layers.
-
-        #if style not given
-        if styles is None:        
-            if self.in_channels == 0:
-                x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-            elif self.architecture == 'resnet':
-                y = self.skip(x, gain=np.sqrt(0.5))
-                x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-                x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, gain=np.sqrt(0.5), **layer_kwargs)
-                x = y.add_(x)
-            else:
-                x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-                x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
-
-            # ToRGB.
-            if img is not None:
-                misc.assert_shape(img, [None, self.img_channels, self.resolution // 2, self.resolution // 2])
-                img = upfirdn2d.upsample2d(img, self.resample_filter)
-            if self.is_last or self.architecture == 'skip':
-                y = self.torgb(x, next(w_iter), fused_modconv=fused_modconv)
-                y = y.to(dtype=torch.float32, memory_format=torch.contiguous_format)
-                img = img.add_(y) if img is not None else y
+        if self.in_channels == 0:
+            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+        elif self.architecture == 'resnet':
+            y = self.skip(x, gain=np.sqrt(0.5))
+            x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, gain=np.sqrt(0.5), **layer_kwargs)
+            x = y.add_(x)
         else:
-            #if style given
-            if self.in_channels == 0:
-                x = self.conv1(x, next(w_iter), next(styles_iter), fused_modconv=fused_modconv, **layer_kwargs)
-            elif self.architecture == 'resnet':
-                y = self.skip(x, gain=np.sqrt(0.5))
-                x = self.conv0(x, next(w_iter), next(styles_iter), fused_modconv=fused_modconv, **layer_kwargs)
-                x = self.conv1(x, next(w_iter), next(styles_iter), fused_modconv=fused_modconv, gain=np.sqrt(0.5), **layer_kwargs)
-                x = y.add_(x)
-            else:
-                x = self.conv0(x, next(w_iter), next(styles_iter), fused_modconv=fused_modconv, **layer_kwargs)
-                x = self.conv1(x, next(w_iter), next(styles_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv0(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
+            x = self.conv1(x, next(w_iter), fused_modconv=fused_modconv, **layer_kwargs)
 
-            # ToRGB.
-            if img is not None:
+        # ToRGB.
+        if img is not None:
+            if self.up > 1:
                 misc.assert_shape(img, [None, self.img_channels, self.resolution // 2, self.resolution // 2])
                 img = upfirdn2d.upsample2d(img, self.resample_filter)
-            if self.is_last or self.architecture == 'skip':
-                y = self.torgb(x, next(w_iter), next(styles_iter), fused_modconv=fused_modconv)
-                y = y.to(dtype=torch.float32, memory_format=torch.contiguous_format)
-                img = img.add_(y) if img is not None else y
-
+            elif self.down > 1:
+                misc.assert_shape(img, [None, self.img_channels, self.resolution * 2, self.resolution * 2])
+                img = upfirdn2d.downsample2d(img, self.resample_filter)
+            else:
+                misc.assert_shape(img, [None, self.img_channels, self.resolution, self.resolution])
+        if self.is_last or self.architecture == 'skip':
+            y = self.torgb(x, next(w_iter), fused_modconv=fused_modconv)
+            y = y.to(dtype=torch.float32, memory_format=torch.contiguous_format)
+            img = img.add_(y) if img is not None else y
+    
         assert x.dtype == dtype
         assert img is None or img.dtype == torch.float32
         return x, img
@@ -488,26 +489,26 @@ class SynthesisNetwork(torch.nn.Module):
         self.num_ws = 0
         res = 4
         use_fp16 = (res >= fp16_resolution)
-        self.poseBlock1 = SynthesisBlock(0, 512, w_dim=w_dim, resolution=res,
+        self.poseBlock1 = SynthesisBlock(0, 512, w_dim=w_dim, resolution=res, up = 2,
                     img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
         self.num_ws += self.poseBlock1.num_conv + self.poseBlock1.num_torgb
 
         res = 8
         use_fp16 = (res >= fp16_resolution)
-        self.poseBlock2 = SynthesisBlock(512, 512, w_dim=w_dim, resolution=res,
+        self.poseBlock2 = SynthesisBlock(512, 512, w_dim=w_dim, resolution=res, up = 2,
                     img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
         self.num_ws += self.poseBlock2.num_conv + self.poseBlock2.num_torgb
 
         res = 16
         use_fp16 = (res >= fp16_resolution)
-        self.poseBlock3 = SynthesisBlock(512, 512, w_dim=w_dim, resolution=res,
+        self.poseBlock3 = SynthesisBlock(512, 512, w_dim=w_dim, resolution=res, up = 2,
                     img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
         self.num_ws += self.poseBlock3.num_conv + self.poseBlock3.num_torgb
 
         #binary region
         res = 32
         use_fp16 = (res >= fp16_resolution)
-        blocks = torch.nn.ModuleList([SynthesisBlock(17, 512, w_dim=w_dim, resolution=res,
+        blocks = torch.nn.ModuleList([SynthesisBlock(17, 512, w_dim=w_dim, resolution=res, up = 2,
                     img_channels=1, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
         for i, block in enumerate(blocks):
             self.num_ws += block.num_conv + block.num_torgb
@@ -516,7 +517,7 @@ class SynthesisNetwork(torch.nn.Module):
         #color region
         res = 64
         use_fp16 = (res >= fp16_resolution)
-        blocks = torch.nn.ModuleList([SynthesisBlock(6, 256, w_dim=w_dim, resolution=res,
+        blocks = torch.nn.ModuleList([SynthesisBlock(6, 256, w_dim=w_dim, resolution=res, up = 2,
                     img_channels=3, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
         for i, block in enumerate(blocks):
             self.num_ws += block.num_conv + block.num_torgb
@@ -524,7 +525,7 @@ class SynthesisNetwork(torch.nn.Module):
         
         res = 128
         use_fp16 = (res >= fp16_resolution)
-        blocks = torch.nn.ModuleList([SynthesisBlock(256, 128, w_dim=w_dim, resolution=res,
+        blocks = torch.nn.ModuleList([SynthesisBlock(256, 128, w_dim=w_dim, resolution=res, up = 2,
                     img_channels=3, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
         for i, block in enumerate(blocks):
             self.num_ws += block.num_conv + block.num_torgb
@@ -533,7 +534,7 @@ class SynthesisNetwork(torch.nn.Module):
         #final
         res = 256
         use_fp16 = (res >= fp16_resolution)
-        self.finalBlock = SynthesisBlock(18, 64, w_dim=w_dim, resolution=res,
+        self.finalBlock = SynthesisBlock(18, 64, w_dim=w_dim, resolution=res, up = 2,
                     img_channels = 3, is_last=False, use_fp16=use_fp16, **block_kwargs)
         self.num_ws += self.finalBlock.num_conv + self.finalBlock.num_torgb    
 
