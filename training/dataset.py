@@ -313,7 +313,7 @@ class ImageFolderDataset(Dataset):
             heatmap = self.getHeatMap(ptlist)
             return heatmap
         else:
-            heatmap = torch.zeros(17, 16, 16)
+            heatmap = torch.zeros(17, 32, 32)
             return heatmap
 
     def getHeatMap(self, pose):
@@ -341,7 +341,7 @@ class ImageFolderDataset(Dataset):
         return heatmap
 
     def getGaussianHeatMap(self, bonePos):
-        width = 16
+        width = 32
         x, y = np.mgrid[0:width:1, 0:width:1]
         pos = np.dstack((x, y))
 

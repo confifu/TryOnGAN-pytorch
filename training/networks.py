@@ -487,32 +487,33 @@ class SynthesisNetwork(torch.nn.Module):
         fp16_resolution = max(2 ** (self.img_resolution_log2 + 1 - num_fp16_res), 8)
 
         self.num_ws = 0
+        #res : 4-->8-->16-->32
         res = 4
-        use_fp16 = (res >= fp16_resolution)
-        self.poseBlock1 = SynthesisBlock(0, 512, w_dim=w_dim, resolution=res, up = 2,
-                    img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
-        self.num_ws += self.poseBlock1.num_conv + self.poseBlock1.num_torgb
-
-        res = 8
-        use_fp16 = (res >= fp16_resolution)
-        self.poseBlock2 = SynthesisBlock(512, 512, w_dim=w_dim, resolution=res, up = 2,
-                    img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
-        self.num_ws += self.poseBlock2.num_conv + self.poseBlock2.num_torgb
-
-        res = 16
-        use_fp16 = (res >= fp16_resolution)
-        self.poseBlock3 = SynthesisBlock(512, 512, w_dim=w_dim, resolution=res, up = 2,
-                    img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
-        self.num_ws += self.poseBlock3.num_conv + self.poseBlock3.num_torgb
+        for i in range(4):
+            use_fp16 = (res >= fp16_resolution)
+            in_channel = channels_dict[res//2] if res > 4 else 0
+            out_channel = channels_dict[res]
+            block = SynthesisBlock(in_channel, out_channel, w_dim=w_dim, resolution=res, up = 2,
+                        img_channels = 17, is_last=False, use_fp16=use_fp16, **block_kwargs)
+            self.num_ws += block.num_conv + block.num_torgb
+            setattr(self, f'poseBlock{i}', block)
+            res *= 2
 
         #binary region
-        res = 32
-        use_fp16 = (res >= fp16_resolution)
-        blocks = torch.nn.ModuleList([SynthesisBlock(17, 512, w_dim=w_dim, resolution=res, up = 2,
-                    img_channels=1, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
-        for i, block in enumerate(blocks):
-            self.num_ws += block.num_conv + block.num_torgb
-            setattr(self, f'binBlock{i}', block)
+        #res : 32-->16-->32-->64
+        reslist = [32, 16, 32, 64]
+        for i in range(3):
+            res = reslist[i+1]
+            use_fp16 = (res >= fp16_resolution)
+            up = 2 if res > reslist[i] else 1
+            down = 2 if res < reslist[i] else 1
+            in_channel = channels_dict[reslist[i]] if i > 0 else 17
+            out_channel = channels_dict[reslist[i+1]]
+            blocks = torch.nn.ModuleList([SynthesisBlock(in_channel, out_channel, w_dim=w_dim, resolution=res, up = up, down = down,
+                        img_channels=1, is_last=False, use_fp16=use_fp16, **block_kwargs) for _ in range(6)])
+            for j, block in enumerate(blocks):
+                self.num_ws += block.num_conv + block.num_torgb
+                setattr(self, f'binBlock{i}_{j}', block)
 
         #color region
         res = 64
@@ -549,15 +550,18 @@ class SynthesisNetwork(torch.nn.Module):
         #pose
         x = img = None
         w_idx = 0
-        x, img, w_idx = self.get_block_output(self.poseBlock1, ws, w_idx, x, img, **block_kwargs)
-        x, img, w_idx = self.get_block_output(self.poseBlock2, ws, w_idx, x, img, **block_kwargs)
-        x, pose, w_idx = self.get_block_output(self.poseBlock3, ws, w_idx, x, img, **block_kwargs)
-        
+        for i in range(4):
+            block = getattr(self, f'poseBlock{i}')
+            x, img, w_idx = self.get_block_output(block, ws, w_idx, x, img, **block_kwargs)
+        pose = img
+
         #bin regions
-        bin_regions = {}
-        for i in range(6):
-            block = getattr(self, f'binBlock{i}')
-            _x_tmp, bin_regions[i], w_idx = self.get_block_output(block, ws, w_idx, pose, None, **block_kwargs)
+        xs = {0:pose, 1:pose, 2:pose, 3:pose, 4:pose, 5:pose}
+        bin_regions = {0:None, 1:None, 2:None, 3:None, 4:None, 5:None}
+        for i in range(3):
+            for j in range(6):
+                setattr(self, f'binBlock{i}_{j}', block)
+                xs[j], bin_regions[j], w_idx = self.get_block_output(block, ws, w_idx, xs[j], bin_regions[j], **block_kwargs)
 
         #combine all bin regions
         bin_all = torch.cat([bin_regions[i] for i in range(6)], dim = 1)
