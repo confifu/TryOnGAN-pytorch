@@ -171,7 +171,7 @@ def training_loop(
 
     # Print network summary tables.
     if rank == 0:
-        z = torch.empty([batch_gpu, G.mapping.num_ws, G.z_dim], device=device)
+        z = torch.empty([batch_gpu, G.z_dim], device=device)
         c = torch.empty([batch_gpu, G.c_dim], device=device)
         pose, bin_regions, col_regions, img = misc.print_module_summary(G, [z, c, True])
         misc.print_module_summary(D, [img, pose, bin_regions, col_regions, c])
@@ -234,7 +234,7 @@ def training_loop(
         save_image_grid(images, os.path.join(run_dir, 'reals.png'), drange=[0,255], grid_size=grid_size)
         save_image_grid(parsemaps, os.path.join(run_dir, 'realparsemaps.png'), drange=[0,7], grid_size=grid_size)
         save_image_grid(np.sum(pose, axis = 1, keepdims=True), os.path.join(run_dir, 'realpose.png'), drange=[0,1], grid_size=grid_size)
-        grid_z = torch.randn([labels.shape[0], G.mapping.num_ws, G.z_dim], device=device).split(batch_gpu)
+        grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
         images = torch.cat([torch.sum(G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[0], dim=1,keepdim=True).cpu() for z, c in zip(grid_z, grid_c)]).numpy()
         save_image_grid(images, os.path.join(run_dir, 'fakes_pose_init.png'), drange=[-1,1], grid_size=grid_size)
@@ -282,7 +282,7 @@ def training_loop(
             phase_real_pmap = (phase_real_pmap.to(device).to(torch.float32)).split(batch_gpu)
             phase_real_c = phase_real_c.to(device).split(batch_gpu)
             phase_pose = phase_pose.to(device).split(batch_gpu)
-            all_gen_z = torch.randn([len(phases) * batch_size, G.mapping.num_ws, G.z_dim], device=device)
+            all_gen_z = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
             all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(len(phases) * batch_size)]
             all_gen_c = torch.from_numpy(np.stack(all_gen_c)).pin_memory().to(device)

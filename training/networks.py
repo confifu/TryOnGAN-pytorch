@@ -205,7 +205,7 @@ class MappingNetwork(torch.nn.Module):
         for idx in range(num_layers):
             in_features = features_list[idx]
             out_features = features_list[idx + 1]
-            layer = torch.nn.Linear(in_features, out_features)
+            layer = FullyConnectedLayer(in_features, out_features, activation=activation, lr_multiplier=lr_multiplier)
             setattr(self, f'fc{idx}', layer)
 
         if num_ws is not None and w_avg_beta is not None:
@@ -226,45 +226,27 @@ class MappingNetwork(torch.nn.Module):
         # Main layers.
         for idx in range(self.num_layers):
             layer = getattr(self, f'fc{idx}')
-            x = torch.nn.functional.leaky_relu(layer(x))
+            x = layer(x)
+
+        # Update moving average of W.
+        if self.w_avg_beta is not None and self.training and not skip_w_avg_update:
+            with torch.autograd.profiler.record_function('update_w_avg'):
+                self.w_avg.copy_(x.detach().mean(dim=0).lerp(self.w_avg, self.w_avg_beta))
+
+        # Broadcast.
+        if self.num_ws is not None:
+            with torch.autograd.profiler.record_function('broadcast'):
+                x = x.unsqueeze(1).repeat([1, self.num_ws, 1])
+
+        # Apply truncation.
+        if truncation_psi != 1:
+            with torch.autograd.profiler.record_function('truncate'):
+                assert self.w_avg_beta is not None
+                if self.num_ws is None or truncation_cutoff is None:
+                    x = self.w_avg.lerp(x, truncation_psi)
+                else:
+                    x[:, :truncation_cutoff] = self.w_avg.lerp(x[:, :truncation_cutoff], truncation_psi)
         return x
-
-#----------------------------------------------------------------------------
-
-class MappingWNetwork(torch.nn.Module):
-    def __init__(self,
-        z_dim,                      # Input latent (Z) dimensionality, 0 = no latent.
-        c_dim,                      # Conditioning label (C) dimensionality, 0 = no label.
-        w_dim,                      # Intermediate latent (W) dimensionality.
-        num_ws,                     # Number of intermediate latents to output, None = do not broadcast.
-        num_layers      = 8,        # Number of mapping layers.
-        embed_features  = None,     # Label embedding dimensionality, None = same as w_dim.
-        layer_features  = None,     # Number of intermediate features in the mapping layers, None = same as w_dim.
-        activation      = 'lrelu',  # Activation function: 'relu', 'lrelu', etc.
-        lr_multiplier   = 0.01,     # Learning rate multiplier for the mapping layers.
-        w_avg_beta      = 0.995,    # Decay for tracking the moving average of W during training, None = do not track.
-    ):
-        super().__init__()
-        self.num_ws = num_ws
-        self.z_dim = z_dim
-        self.w_dim = w_dim
-        self.layer = MappingNetwork(z_dim=z_dim,
-                                    c_dim=0,
-                                    w_dim=w_dim,
-                                    num_ws=None,
-                                    num_layers=num_layers,
-                                    embed_features=embed_features,
-                                    layer_features=layer_features,
-                                    activation=activation,
-                                    lr_multiplier=lr_multiplier,
-                                    w_avg_beta=None)
-    def forward(self, z, c, truncation_psi=1, truncation_cutoff=None, skip_w_avg_update=False):
-        # Embed, n
-        assert z.shape[1] == self.num_ws
-        z = z.reshape(-1, self.z_dim)
-        ws = self.layer(z, None)
-        ws = ws.reshape(-1, self.num_ws, self.w_dim)
-        return ws
 
 #----------------------------------------------------------------------------
 @persistence.persistent_class
@@ -610,7 +592,7 @@ class Generator(torch.nn.Module):
         self.img_channels = img_channels
         self.synthesis = SynthesisNetwork(w_dim=w_dim, img_resolution=img_resolution, img_channels=img_channels, **synthesis_kwargs)
         self.num_ws = self.synthesis.num_ws
-        self.mapping = MappingWNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
+        self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
 
     def forward(self, z, c, ret_pose= False, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
