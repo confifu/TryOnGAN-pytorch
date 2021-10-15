@@ -306,17 +306,18 @@ class ImageFolderDataset(Dataset):
     def get_pose(self):
         base = os.path.basename(self.fname)
         keypoint_list = self.df[self.df['name'] == base]['keypoints'].tolist()
+        poseres = 32
         if len(keypoint_list) > 0:
             keypoint = keypoint_list[0]
             ptlist = keypoint.split(':')
             ptlist = [float(x) for x in ptlist]
-            heatmap = self.getHeatMap(ptlist)
+            heatmap = self.getHeatMap(ptlist, poseres)
             return heatmap
         else:
-            heatmap = torch.zeros(17, 32, 32)
+            heatmap = torch.zeros(17, poseres, poseres)
             return heatmap
 
-    def getHeatMap(self, pose):
+    def getHeatMap(self, pose, res):
         '''
         pose should be a list of length 51, every 3 number for
         x, y and confidence for each of the 17 keypoints.
@@ -329,8 +330,8 @@ class ImageFolderDataset(Dataset):
             y = pose[3*i + 1]
             c = pose[3*i + 2]
             
-            ratio = 16.0 / self.image_size
-            map = self.getGaussianHeatMap([x*ratio, y*ratio])
+            ratio = float(res) / self.image_size
+            map = self.getGaussianHeatMap([x*ratio, y*ratio], res)
 
             if c < 0.4:
                 map = 0.0 * map
@@ -340,8 +341,7 @@ class ImageFolderDataset(Dataset):
         heatmap = torch.from_numpy(maps).transpose(0, -1)
         return heatmap
 
-    def getGaussianHeatMap(self, bonePos):
-        width = 32
+    def getGaussianHeatMap(self, bonePos, width):
         x, y = np.mgrid[0:width:1, 0:width:1]
         pos = np.dstack((x, y))
 
