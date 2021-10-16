@@ -15,6 +15,7 @@ import torch
 import dnnlib
 import pandas as pd
 from scipy.stats import multivariate_normal
+import torchvision.transforms as T
 
 try:
     import pyspng
@@ -105,13 +106,24 @@ class Dataset(torch.utils.data.Dataset):
 
         if self._xflip[idx]:
             assert image.ndim == 3 # CHW
-            image = image[:, :, ::-1]
+            image = image[:, :, ::-1]  - np.zeros_like(image)
 
             assert parsemap.ndim == 3 # CHW
-            parsemap = parsemap[:, :, ::-1]
+            parsemap = parsemap[:, :, ::-1]  - np.zeros_like(parsemap)
 
             pose = torch.flip(pose, [-1])
-        
+
+        #random crop
+        pose_res = pose.shape[-1]
+        image_res = image.shape[-1]
+        pose = T.Resize(size=image_res)(pose)
+        combined = torch.cat([torch.Tensor(image), torch.Tensor(parsemap), pose])
+        rcrop = T.RandomResizedCrop(size=image_res, scale=(0.25,1.0), ratio=(0.95, 1.05))
+        combined = rcrop(combined)
+        image, parsemap, pose = torch.split(combined, [3,1, 17])
+        image = image.numpy()
+        parsemap = parsemap.numpy()
+        pose = T.Resize(size=pose_res)(pose)
         return image.copy(), parsemap.copy(), self.get_label(idx), pose
 
     def get_label(self, idx):
