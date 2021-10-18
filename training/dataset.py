@@ -326,7 +326,8 @@ class ImageFolderDataset(Dataset):
             heatmap = self.getHeatMap(ptlist, poseres)
             return heatmap
         else:
-            heatmap = torch.zeros(17, poseres, poseres)
+            noise = np.random.rand(17, poseres, poseres) * 0.05
+            heatmap = torch.from_numpy(noise)
             return heatmap
 
     def getHeatMap(self, pose, res):
@@ -346,10 +347,13 @@ class ImageFolderDataset(Dataset):
             map = self.getGaussianHeatMap([x*ratio, y*ratio], res)
 
             if c < 0.4:
-                map = 0.0 * map
+                map = c * map
             stack.append(map)
         
         maps = np.dstack(stack)
+        noise = np.random.rand(*maps.shape) * 0.05
+        maps = maps + noise
+        maps = maps/maps.max()
         heatmap = torch.from_numpy(maps).transpose(0, -1)
         return heatmap
 
@@ -358,6 +362,7 @@ class ImageFolderDataset(Dataset):
         pos = np.dstack((x, y))
 
         gau = multivariate_normal(mean = list(bonePos), cov = [[width*0.02, 0.0], [0.0, width*0.02]]).pdf(pos)
+        gau = gau/gau.max()
         return gau
 
 #----------------------------------------------------------------------------
