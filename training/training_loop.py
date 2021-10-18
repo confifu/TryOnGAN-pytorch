@@ -237,7 +237,7 @@ def training_loop(
         grid_z = torch.randn([labels.shape[0], G.z_dim], device=device).split(batch_gpu)
         grid_c = torch.from_numpy(labels).to(device).split(batch_gpu)
         images = torch.cat([torch.sum(G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[0], dim=1,keepdim=True).cpu() for z, c in zip(grid_z, grid_c)]).numpy()
-        save_image_grid(images, os.path.join(run_dir, 'fakes_pose_init.png'), drange=[-1,1], grid_size=grid_size)
+        save_image_grid(images, os.path.join(run_dir, 'fakes_pose_init.png'), drange=[0,1], grid_size=grid_size)
         '''
         for i in range(7):
             bina = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[1][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
@@ -283,7 +283,7 @@ def training_loop(
             phase_real_img = (phase_real_img.to(device).to(torch.float32) / 127.5 - 1).split(batch_gpu)
             phase_real_pmap = (phase_real_pmap.to(device).to(torch.float32)).split(batch_gpu)
             phase_real_c = phase_real_c.to(device).split(batch_gpu)
-            phase_pose = (phase_pose.to(device)/0.5 - 1).split(batch_gpu)            
+            phase_pose = phase_pose.to(device).split(batch_gpu)
             all_gen_z = torch.randn([len(phases) * batch_size, G.z_dim], device=device)
             all_gen_z = [phase_gen_z.split(batch_gpu) for phase_gen_z in all_gen_z.split(batch_size)]
             all_gen_c = [training_set.get_label(np.random.randint(len(training_set))) for _ in range(len(phases) * batch_size)]
@@ -371,7 +371,7 @@ def training_loop(
         # Save image snapshot.
         if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
             images = torch.cat([torch.sum(G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[0], dim=1,keepdim=True).cpu() for z, c in zip(grid_z, grid_c)]).numpy()
-            save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_pose.png'), drange=[-1,1], grid_size=grid_size)
+            save_image_grid(images, os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}_pose.png'), drange=[0, 1], grid_size=grid_size)
             '''
             for i in range(7):
                 bina = torch.cat([G_ema(z=z, c=c, ret_pose = True, noise_mode='const')[1][i].cpu() for z, c in zip(grid_z, grid_c)]).numpy()
