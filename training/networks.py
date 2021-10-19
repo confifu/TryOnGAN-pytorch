@@ -533,15 +533,17 @@ class SynthesisNetwork(torch.nn.Module):
         w_idx += block.num_conv + block.num_torgb
         return x, img, w_idx
 
-    def forward(self, ws, ret_pose = False, **block_kwargs):
+    def forward(self, ws, pose, ret_pose = False, **block_kwargs):
 
         #pose
         x = img = None
         w_idx = 0
+        '''
         for i in range(4):
             block = getattr(self, f'poseBlock{i}')
             x, img, w_idx = self.get_block_output(block, ws, w_idx, x, img, **block_kwargs)
         pose = img
+        '''
 
         #bin regions
         xs = {i:pose for i in range(7)}
@@ -594,9 +596,9 @@ class Generator(torch.nn.Module):
         self.num_ws = self.synthesis.num_ws
         self.mapping = MappingNetwork(z_dim=z_dim, c_dim=c_dim, w_dim=w_dim, num_ws=self.num_ws, **mapping_kwargs)
 
-    def forward(self, z, c, ret_pose= False, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
+    def forward(self, z, c, pose, ret_pose= False, truncation_psi=1, truncation_cutoff=None, **synthesis_kwargs):
         ws = self.mapping(z, c, truncation_psi=truncation_psi, truncation_cutoff=truncation_cutoff)
-        return self.synthesis(ws, ret_pose=ret_pose, **synthesis_kwargs)
+        return self.synthesis(ws, pose, ret_pose=ret_pose, **synthesis_kwargs)
 
 #----------------------------------------------------------------------------
 
