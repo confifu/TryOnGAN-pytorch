@@ -173,7 +173,7 @@ def training_loop(
     if rank == 0:
         z = torch.empty([batch_gpu, G.z_dim], device=device)
         c = torch.empty([batch_gpu, G.c_dim], device=device)
-        pose = torch.empty([batch_gpu, 17, 256, 256], device=device)        
+        pose = torch.empty([batch_gpu, 17, 32, 32], device=device)        
         pose, bin_regions, col_regions, img = misc.print_module_summary(G, [z, c, pose, True])
         misc.print_module_summary(D, [img, pose, bin_regions, col_regions, c])
 

@@ -63,8 +63,8 @@ class StyleGAN2Loss(Loss):
                                     size=(64, 64),
                                     mode='bilinear',
                                     align_corners=True)
-        hi = torch.ones(pmap.shape).cuda()
-        lo = -torch.ones(pmap.shape).cuda()
+        hi = torch.normal(1, 0.1, size=pmap.shape).cuda()
+        lo = torch.normal(-1, 0.1, size=pmap.shape).cuda()
         hi = hi.requires_grad_(require_grad)
         lo = lo.requires_grad_(require_grad)
         if detach:
@@ -93,7 +93,7 @@ class StyleGAN2Loss(Loss):
                                     align_corners=True)
         '''
         pmap = torch.cat([pmap, pmap, pmap], dim = 1)
-        lo = -torch.ones(img.shape).cuda()
+        lo = torch.normal(-1, 0.1, size=img.shape).cuda()
         lo = lo.requires_grad_(require_grad)
         if detach:
             pmap = pmap.detach().requires_grad_(require_grad)
@@ -155,7 +155,7 @@ class StyleGAN2Loss(Loss):
         loss_Dgen = 0
         if do_Dmain:
             with torch.autograd.profiler.record_function('Dgen_forward'):
-                gen_pose, gen_bin_regions, gen_col_regions, gen_img, _gen_ws = self.run_G(gen_z, gen_c, ret_pose = True, sync=False)
+                gen_pose, gen_bin_regions, gen_col_regions, gen_img, _gen_ws = self.run_G(gen_z, gen_c, real_pose, ret_pose = True, sync=False)
                 real_bin_regions = self.getBinRegionDict(real_pmap, detach = False, require_grad=False)
                 real_col_regions = self.getColRegionDict(real_img, real_pmap, detach = False, require_grad=False)
                 gen_logits = self.run_D(gen_img, gen_pose, gen_bin_regions, gen_col_regions, gen_c, sync=False) # Gets synced by loss_Dreal.
