@@ -560,6 +560,16 @@ class SynthesisNetwork(torch.nn.Module):
             for j in range(7):
                 block = getattr(self, f'colBlock{i}_{j}')
                 xs[j], col_regions[j], w_idx = self.get_block_output(block, ws, w_idx, xs[j], col_regions[j], **block_kwargs)
+
+        #dot product
+        def resize(img):
+            img = torch.nn.functional.interpolate(img,
+                                        size=(256, 256),
+                                        mode='bilinear',
+                                        align_corners=True)
+            return img
+        col_regions = { i : torch.einsum('bcwh,bdwh->bdwh', resize(bin_regions[i]), col_regions[i]) for i in range(7)}
+
         #combine all col regions
         col_all = torch.cat([col_regions[i] for i in range(7)], dim = 1)
 
