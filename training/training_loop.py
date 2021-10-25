@@ -123,6 +123,7 @@ def training_loop(
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
     project                 = None,
     run                     = None,
+    traintill               = 'all',
 ):
     # Initialize.
     start_time = time.time()
@@ -307,7 +308,7 @@ def training_loop(
             for round_idx, (real_img, real_pmap, pose, real_c, gen_z, gen_c) in enumerate(zip(phase_real_img, phase_real_pmap, phase_pose, phase_real_c, phase_gen_z, phase_gen_c)):
                 sync = (round_idx == batch_size // (batch_gpu * num_gpus) - 1)
                 gain = phase.interval
-                loss.accumulate_gradients(phase=phase.name, real_img=real_img, real_pmap=real_pmap, real_pose = pose, real_c=real_c, gen_z=gen_z, gen_c=gen_c, sync=sync, gain=gain)
+                loss.accumulate_gradients(phase=phase.name, real_img=real_img, real_pmap=real_pmap, real_pose = pose, real_c=real_c, gen_z=gen_z, gen_c=gen_c, sync=sync, gain=gain, traintill=traintill)
 
             # Update weights.
             phase.module.requires_grad_(False)

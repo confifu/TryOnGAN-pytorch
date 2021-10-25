@@ -60,6 +60,7 @@ def setup_training_loop_kwargs(
     # Transfer learning.
     resume     = None, # Load previous network: 'noresume' (default), 'ffhq256', 'ffhq512', 'ffhq1024', 'celebahq256', 'lsundog256', <file>, <url>
     freezed    = None, # Freeze-D: <int>, default = 0 discriminator layers
+    traintill  = 'all',# [default: all]', 'all', 'bin', 'col'
 
     # Performance options (not included in desc).
     fp32       = None, # Disable mixed-precision training: <bool>, default = False
@@ -327,6 +328,7 @@ def setup_training_loop_kwargs(
         desc += f'-freezed{freezed:d}'
         args.D_kwargs.block_kwargs.freeze_layers = freezed
 
+    args.traintill = traintill
     # -------------------------------------------------
     # Performance options: fp32, nhwc, nobench, workers
     # -------------------------------------------------
@@ -444,6 +446,7 @@ class CommaSeparatedList(click.ParamType):
 # Transfer learning.
 @click.option('--resume', help='Resume training [default: noresume]', metavar='PKL')
 @click.option('--freezed', help='Freeze-D [default: 0 layers]', type=int, metavar='INT')
+@click.option('--traintill', help='Gen components till which to train[default: all]', type=click.Choice(['all', 'bin', 'col']))
 
 # Performance options.
 @click.option('--fp32', help='Disable mixed-precision training', type=bool, metavar='BOOL')
@@ -533,6 +536,7 @@ def main(ctx, outdir, dry_run, **config_kwargs):
     print(f'Dataset x-flips:    {args.training_set_kwargs.xflip}')
     print(f'Project name:       {args.project}')
     print(f'Run name:           {args.run}')
+    print(f'Traintill:          {args.traintill}')
     print()
 
     # Dry run?
